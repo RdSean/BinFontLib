@@ -10,6 +10,11 @@ Documentation:
 
 Example:
 - examples/BinTestInteractive/
+- examples/PaperS3BinFontDemo/
+
+PlatformIO demo:
+- `platformio.ini` contains a ready-to-build `papers3-demo` environment for M5Stack PaperS3
+- `readme/PAPERS3_DEMO.md` explains build, flash, uploadfs, and serial verification steps
 
   # Next
   - I will change to PlatformIO for more posible.

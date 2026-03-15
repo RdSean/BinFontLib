@@ -204,7 +204,9 @@ static bool decodeToNibbles(
     if (!bmp || bmpSize == 0 || !outNibbles) return false;
     if (outBytes < needBytes) return false;
 
-    BitReader br{bmp, bmpSize};
+    BitReader br;
+    br.data = bmp;
+    br.size = bmpSize;
 
     for (size_t i = 0; i < pixels; i++) {
         const int q = br.decodeQ();

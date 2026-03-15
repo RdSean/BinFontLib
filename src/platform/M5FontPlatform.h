@@ -3,6 +3,7 @@
 
 #include "BinFontPlatform.h"
 #include <Arduino.h>
+#include <FS.h>
 #include <SD.h>
 
 #if __has_include(<esp_heap_caps.h>)
@@ -15,14 +16,23 @@
 // M5Stack平台实现
 class M5FontPlatform : public IBinFontPlatform {
 public:
-    M5FontPlatform() = default;
+    explicit M5FontPlatform(fs::FS* filesystem = &SD) : _filesystem(filesystem) {}
     virtual ~M5FontPlatform() = default;
+
+    void setFilesystem(fs::FS* filesystem) {
+        _filesystem = filesystem ? filesystem : &SD;
+    }
+
+    fs::FS* getFilesystem() const {
+        return _filesystem;
+    }
     
     // ===== 文件系统接口 =====
     
     bool fileOpen(const char* path, void** handle) override {
         if (!path || !handle) return false;
-        File* file = new File(SD.open(path, FILE_READ));
+        if (!_filesystem) return false;
+        File* file = new File(_filesystem->open(path, FILE_READ));
         if (!file || !*file) {
             delete file;
             return false;
@@ -58,7 +68,8 @@ public:
     
     bool fileExists(const char* path) override {
         if (!path) return false;
-        return SD.exists(path);
+        if (!_filesystem) return false;
+        return _filesystem->exists(path);
     }
     
     // ===== 内存管理接口 =====
@@ -128,6 +139,9 @@ public:
     uint32_t getMicros() override {
         return micros();
     }
+
+private:
+    fs::FS* _filesystem = &SD;
 };
 
 #endif // M5_FONT_PLATFORM_H
