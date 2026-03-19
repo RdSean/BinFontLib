@@ -5,10 +5,13 @@
 #include <M5Unified.h>
 #include <SD.h>
 #include <SPI.h>
+#include <WiFi.h>
 
 #include "PaperS3EDCFontManager.h"
 #include "PaperS3EDCModel.h"
 #include "PaperS3EDCRenderer.h"
+#include "PaperS3EDCStorage.h"
+#include "PaperS3EDCSync.h"
 
 namespace papers3edc {
 namespace {
@@ -21,12 +24,19 @@ constexpr int kFooterButtonGap = 10;
 constexpr int kFooterButtonCount = 4;
 constexpr int kSettingsTop = 154;
 constexpr int kSettingsRowHeight = 58;
+constexpr int kBodyTop = 74;
+constexpr int kWifiRowTop = 116;
+constexpr int kWifiRowHeight = 52;
+constexpr int kKeyboardStartY = 182;
+constexpr int kKeyboardKeyW = 72;
+constexpr int kKeyboardKeyH = 42;
+constexpr int kKeyboardGap = 8;
 constexpr const char* kWeekdayCn[] = {"星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"};
 
 class PaperS3EDCController {
 public:
     PaperS3EDCController()
-        : _fonts(&M5.Display), _renderer(&M5.Display, &_fonts) {}
+        : _fonts(&M5.Display), _renderer(&M5.Display, &_fonts), _storage(&LittleFS) {}
 
     void begin();
     void loop();
@@ -40,10 +50,19 @@ private:
     void showPage(AppPage page);
     void handleTouch(int x, int y);
     void handleFooterTouch(int x, int y);
+    void scanWifiNetworks();
+    void handleWifiPasswordTouch(int x, int y);
+    void appendPasswordChar(const char* label);
+    void removeLastPasswordChar();
+    void persistState();
+    void persistConfig();
+    void connectConfiguredWifi();
 
     AppState _state{};
     PaperS3EDCFontManager _fonts;
     PaperS3EDCRenderer _renderer;
+    PaperS3EDCStorage _storage;
+    PaperS3EDCSyncService _sync;
     bool _touchActive = false;
     uint32_t _lastTouchMs = 0;
     uint32_t _lastStatusRefreshMs = 0;
@@ -122,6 +141,127 @@ void PaperS3EDCController::refreshDateAndPower() {
     }
     copyText(_state.summary.dateTitle, sizeof(_state.summary.dateTitle), "2026年03月20日");
     copyText(_state.summary.weekLabel, sizeof(_state.summary.weekLabel), kFallbackWeekday);
+}
+
+void PaperS3EDCController::persistState() {
+    if (!_state.littleFsReady) return;
+    _storage.saveState(_state);
+}
+
+void PaperS3EDCController::persistConfig() {
+    if (!_state.littleFsReady) return;
+    _storage.saveConfig(_state.config);
+}
+
+void PaperS3EDCController::scanWifiNetworks() {
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect(false, true);
+    delay(40);
+    int count = WiFi.scanNetworks(false, true);
+    _state.wifiNetworkCount = 0;
+    if (count <= 0) {
+        setStatus("未发现网络", "可稍后重试");
+        return;
+    }
+    const int limit = std::min(count, (int)kMaxWifiNetworks);
+    for (int index = 0; index < limit; ++index) {
+        copyText(_state.wifiNetworks[index].ssid, sizeof(_state.wifiNetworks[index].ssid), WiFi.SSID(index).c_str());
+        _state.wifiNetworks[index].rssi = WiFi.RSSI(index);
+        _state.wifiNetworks[index].secure = (WiFi.encryptionType(index) != WIFI_AUTH_OPEN);
+    }
+    _state.wifiNetworkCount = limit;
+    _state.focusedWifiIndex = 0;
+    setStatus("网络扫描完成", "请选择要连接的 Wi‑Fi");
+    WiFi.scanDelete();
+}
+
+void PaperS3EDCController::appendPasswordChar(const char* label) {
+    if (!label || !label[0]) return;
+    const size_t len = strlen(_state.passwordBuffer);
+    if (len >= sizeof(_state.passwordBuffer) - 1) return;
+    if (strcmp(label, "空") == 0) {
+        _state.passwordBuffer[len] = ' ';
+        _state.passwordBuffer[len + 1] = '\0';
+        return;
+    }
+    _state.passwordBuffer[len] = label[0];
+    _state.passwordBuffer[len + 1] = '\0';
+}
+
+void PaperS3EDCController::removeLastPasswordChar() {
+    const size_t len = strlen(_state.passwordBuffer);
+    if (len == 0) return;
+    _state.passwordBuffer[len - 1] = '\0';
+}
+
+void PaperS3EDCController::connectConfiguredWifi() {
+    if (!_state.config.ssid[0]) {
+        setStatus("未选择网络", "请先选择 Wi‑Fi");
+        return;
+    }
+    if (!_state.passwordBuffer[0] && _state.config.password[0]) {
+        copyText(_state.passwordBuffer, sizeof(_state.passwordBuffer), _state.config.password);
+    }
+    if (!_state.passwordBuffer[0]) {
+        setStatus("密码为空", "请继续输入");
+        return;
+    }
+    copyText(_state.config.password, sizeof(_state.config.password), _state.passwordBuffer);
+    _state.config.wifiConfigured = true;
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(_state.config.ssid, _state.config.password);
+    setStatus("正在连接 Wi‑Fi", _state.config.ssid);
+    const uint32_t start = millis();
+    while (WiFi.status() != WL_CONNECTED && (millis() - start) < 3000) {
+        delay(100);
+    }
+    _state.config.wifiConnected = WiFi.status() == WL_CONNECTED;
+    if (_state.config.wifiConnected) {
+        copyText(_state.config.lastSyncLabel, sizeof(_state.config.lastSyncLabel), "网络已连接");
+        _state.syncState = SyncState::Idle;
+        setStatus("Wi‑Fi 已连接", _state.config.ssid);
+    } else {
+        copyText(_state.config.lastSyncLabel, sizeof(_state.config.lastSyncLabel), "连接失败");
+        _state.syncState = SyncState::Offline;
+        setStatus("连接失败", "请检查密码后重试");
+    }
+    persistConfig();
+    showPage(AppPage::Settings);
+}
+
+void PaperS3EDCController::handleWifiPasswordTouch(int x, int y) {
+    if (y < kKeyboardStartY) return;
+    const int row = (y - kKeyboardStartY) / (kKeyboardKeyH + kKeyboardGap);
+    const int col = (x - kPadding) / (kKeyboardKeyW + kKeyboardGap);
+    if (row < 0 || row >= 4 || col < 0 || col >= 10) return;
+    const int keyX = kPadding + col * (kKeyboardKeyW + kKeyboardGap);
+    const int keyY = kKeyboardStartY + row * (kKeyboardKeyH + kKeyboardGap);
+    if (x > keyX + kKeyboardKeyW || y > keyY + kKeyboardKeyH) return;
+
+    static const char* lowerRows[4][10] = {
+        {"1","2","3","4","5","6","7","8","9","0"},
+        {"q","w","e","r","t","y","u","i","o","p"},
+        {"a","s","d","f","g","h","j","k","l","<-"},
+        {"大","z","x","c","v","b","n","m","空","确定"},
+    };
+    static const char* upperRows[4][10] = {
+        {"1","2","3","4","5","6","7","8","9","0"},
+        {"Q","W","E","R","T","Y","U","I","O","P"},
+        {"A","S","D","F","G","H","J","K","L","<-"},
+        {"小","Z","X","C","V","B","N","M","空","确定"},
+    };
+    const char* label = _state.passwordUppercase ? upperRows[row][col] : lowerRows[row][col];
+    if (strcmp(label, "<-" ) == 0) {
+        removeLastPasswordChar();
+    } else if (strcmp(label, "大") == 0 || strcmp(label, "小") == 0) {
+        _state.passwordUppercase = !_state.passwordUppercase;
+    } else if (strcmp(label, "确定") == 0) {
+        connectConfiguredWifi();
+        return;
+    } else {
+        appendPasswordChar(label);
+    }
+    showPage(AppPage::WifiPassword);
 }
 
 void PaperS3EDCController::refreshCounts() {
@@ -225,6 +365,7 @@ void PaperS3EDCController::handleTouch(int x, int y) {
                 _state.armedTaskIndex = -1;
                 refreshCounts();
                 setStatus("任务已完成", "积分已累计");
+                persistState();
                 showPage(AppPage::Today);
                 return;
             }
@@ -238,10 +379,12 @@ void PaperS3EDCController::handleTouch(int x, int y) {
             if (y >= top && y <= top + 42) {
                 _state.focusedSettingsIndex = index;
                 if (index == 0) {
+                    scanWifiNetworks();
                     showPage(AppPage::WifiList);
                 } else if (index == 1) {
-                    _state.syncState = SyncState::Pending;
-                    setStatus("已准备同步", "后续接入云端接口");
+                    _sync.pushPendingEvents(_state);
+                    persistState();
+                    persistConfig();
                     showPage(AppPage::SyncStatus);
                 } else {
                     showPage(AppPage::Today);
@@ -253,17 +396,24 @@ void PaperS3EDCController::handleTouch(int x, int y) {
     }
 
     if (_state.currentPage == AppPage::WifiList) {
-        const int listTop = 96;
+        const int listTop = kWifiRowTop;
         for (size_t index = 0; index < std::min<size_t>(_state.wifiNetworkCount, 6); ++index) {
             const int top = listTop + (int)index * 52;
             if (y >= top && y <= top + 40) {
                 _state.focusedWifiIndex = (int)index;
                 copyText(_state.config.ssid, sizeof(_state.config.ssid), _state.wifiNetworks[index].ssid);
+                memset(_state.passwordBuffer, 0, sizeof(_state.passwordBuffer));
+                _state.passwordUppercase = false;
                 setStatus("已选择网络", _state.config.ssid);
                 showPage(AppPage::WifiPassword);
                 return;
             }
         }
+        return;
+    }
+
+    if (_state.currentPage == AppPage::WifiPassword) {
+        handleWifiPasswordTouch(x, y);
         return;
     }
 
@@ -282,14 +432,17 @@ void PaperS3EDCController::begin() {
     mountStorage();
     _state.fontReady = _fonts.load(_state.littleFsReady, _state.sdReady);
     seedFakeState();
-
-    _state.wifiNetworkCount = 3;
-    copyText(_state.wifiNetworks[0].ssid, sizeof(_state.wifiNetworks[0].ssid), "SeanHome-5G");
-    _state.wifiNetworks[0].rssi = -46;
-    copyText(_state.wifiNetworks[1].ssid, sizeof(_state.wifiNetworks[1].ssid), "StudyRoom");
-    _state.wifiNetworks[1].rssi = -59;
-    copyText(_state.wifiNetworks[2].ssid, sizeof(_state.wifiNetworks[2].ssid), "PaperS3-Guest");
-    _state.wifiNetworks[2].rssi = -71;
+    if (_state.littleFsReady) {
+        _storage.loadConfig(_state.config);
+        if (_storage.loadState(_state)) {
+            refreshDateAndPower();
+            refreshCounts();
+            setStatus("已恢复本地状态", _state.config.wifiConfigured ? _state.config.ssid : "本地缓存");
+        }
+    }
+    if (_state.config.wifiConfigured) {
+        connectConfiguredWifi();
+    }
 
     Serial.printf("[boot] littlefs=%d sd=%d font=%d path=%s\n",
                   _state.littleFsReady,
