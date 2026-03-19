@@ -19,6 +19,11 @@ constexpr int kButtonGap = 12;
 constexpr uint32_t kTouchDebounceMs = 150;
 constexpr uint32_t kBenchmarkIterations = 10;
 constexpr size_t kBenchmarkCaseCount = 5;
+constexpr size_t kStripeCount = 8;
+constexpr int kStripeOverlapPx = 24;
+constexpr int kModeButtonWidth = 170;
+constexpr int kEpdButtonWidth = 150;
+constexpr int kModeButtonHeight = 34;
 
 constexpr const char* kFontCandidates[] = {
     "/霞鹜文楷32.bin",
@@ -60,6 +65,18 @@ enum class StorageKind : uint8_t {
     SD,
 };
 
+enum class BenchmarkMode : uint8_t {
+    Direct = 0,
+    Stripe,
+};
+
+enum class EpdRefreshMode : uint8_t {
+    Fast = 0,
+    Text,
+    Quality,
+    Fastest,
+};
+
 struct FontSource {
     StorageKind kind = StorageKind::None;
     const char* label = "none";
@@ -95,6 +112,8 @@ BenchmarkCase g_benchmarkCases[kBenchmarkCaseCount] = {
 BenchmarkSummary g_benchmarkResults[kBenchmarkCaseCount];
 
 Page g_page = Page::Benchmark;
+BenchmarkMode g_benchmarkMode = BenchmarkMode::Direct;
+EpdRefreshMode g_epdRefreshMode = EpdRefreshMode::Text;
 FontSource g_fontSource;
 bool g_littleFsReady = false;
 bool g_sdReady = false;
@@ -107,12 +126,67 @@ int g_screenHeight = 0;
 String g_statusLine1;
 String g_statusLine2;
 
+int contentX() { return kPadding; }
+int contentY() { return kHeaderHeight + 48; }
+int contentWidth() { return g_screenWidth - kPadding * 2; }
+int contentHeight() { return g_screenHeight - kHeaderHeight - kFooterHeight - 56; }
+int epdButtonX() { return g_screenWidth - kPadding - kEpdButtonWidth; }
+int modeButtonX() { return epdButtonX() - kButtonGap - kModeButtonWidth; }
+int modeButtonY() { return 10; }
+
 const char* storageName(StorageKind kind) {
     switch (kind) {
         case StorageKind::LittleFS: return "LittleFS";
         case StorageKind::SD: return "SD";
         default: return "None";
     }
+}
+
+const char* benchmarkModeName(BenchmarkMode mode) {
+    switch (mode) {
+        case BenchmarkMode::Stripe: return "Stripe";
+        case BenchmarkMode::Direct:
+        default:
+            return "Direct";
+    }
+}
+
+const char* epdModeName(EpdRefreshMode mode) {
+    switch (mode) {
+        case EpdRefreshMode::Fast: return "Fast";
+        case EpdRefreshMode::Quality: return "Quality";
+        case EpdRefreshMode::Fastest: return "Fastest";
+        case EpdRefreshMode::Text:
+        default:
+            return "Text";
+    }
+}
+
+epd_mode_t epdModeValue(EpdRefreshMode mode) {
+    switch (mode) {
+        case EpdRefreshMode::Fast: return epd_mode_t::epd_fast;
+        case EpdRefreshMode::Quality: return epd_mode_t::epd_quality;
+        case EpdRefreshMode::Fastest: return epd_mode_t::epd_fastest;
+        case EpdRefreshMode::Text:
+        default:
+            return epd_mode_t::epd_text;
+    }
+}
+
+void applyCurrentEpdMode() {
+    if (M5.Display.isEPD()) {
+        M5.Display.setEpdMode(epdModeValue(g_epdRefreshMode));
+    }
+}
+
+void displayCurrentFrame() {
+    applyCurrentEpdMode();
+    M5.Display.display();
+}
+
+void displayCurrentRegion(int32_t x, int32_t y, int32_t w, int32_t h) {
+    applyCurrentEpdMode();
+    M5.Display.display(x, y, w, h);
 }
 
 uint32_t countUtf8Chars(const char* text) {
@@ -139,9 +213,7 @@ void setStatus(const String& line1, const String& line2 = "") {
 
 void configureDisplay() {
     M5.Display.setRotation(1);
-    if (M5.Display.isEPD()) {
-        M5.Display.setEpdMode(epd_mode_t::epd_text);
-    }
+    applyCurrentEpdMode();
     M5.Display.fillScreen(TFT_WHITE);
     M5.Display.setTextColor(TFT_BLACK, TFT_WHITE);
     M5.Display.setFont(&fonts::Font2);
@@ -170,9 +242,14 @@ void drawHeader(const char* title) {
     M5.Display.setFont(&fonts::Font4);
     M5.Display.setCursor(kPadding, 14);
     M5.Display.print(title);
-    M5.Display.setFont(&fonts::Font2);
-    M5.Display.setCursor(g_screenWidth - 240, 18);
-    M5.Display.printf("Storage: %s", storageName(g_fontSource.kind));
+
+    char benchBuf[28];
+    snprintf(benchBuf, sizeof(benchBuf), "Bench:%s", benchmarkModeName(g_benchmarkMode));
+    drawButton(modeButtonX(), modeButtonY(), kModeButtonWidth, kModeButtonHeight, benchBuf, true);
+
+    char epdBuf[24];
+    snprintf(epdBuf, sizeof(epdBuf), "EPD:%s", epdModeName(g_epdRefreshMode));
+    drawButton(epdButtonX(), modeButtonY(), kEpdButtonWidth, kModeButtonHeight, epdBuf, true);
 }
 
 void drawFooter() {
@@ -205,7 +282,7 @@ void showErrorScreen(const char* title, const char* detail) {
     M5.Display.setCursor(kPadding, kHeaderHeight + 70);
     M5.Display.print(detail);
     drawFooter();
-    M5.Display.display();
+    displayCurrentFrame();
 }
 
 bool mountStorage() {
@@ -287,15 +364,14 @@ void logGlyphMetrics() {
 void renderPreviewPage() {
     beginContent();
     drawHeader("Preview");
-    M5.Display.setFont(&fonts::Font2);
     M5.Display.setCursor(kPadding, kHeaderHeight + 12);
     M5.Display.print("Real bin font preview using root asset");
 
     g_renderer.drawText(kPreviewTitle, kPadding, kHeaderHeight + 48, g_screenWidth - kPadding * 2, 48, true);
     RenderStats stats = g_renderer.drawText(kPreviewText, kPadding, kHeaderHeight + 110, g_screenWidth - kPadding * 2, 220, true);
-    setStatus(String("Render ") + stats.render_us + " us", String(storageName(g_fontSource.kind)) + ":" + g_fontSource.path);
+    setStatus(String("Render ") + stats.render_us + " us", String("EPD ") + epdModeName(g_epdRefreshMode) + " | " + storageName(g_fontSource.kind) + ":" + g_fontSource.path);
     drawFooter();
-    M5.Display.display();
+    displayCurrentFrame();
 }
 
 void renderGlyphPage() {
@@ -307,38 +383,34 @@ void renderGlyphPage() {
     RenderStats stats = g_renderer.drawText(kGlyphSample, kPadding, kHeaderHeight + 70, g_screenWidth - kPadding * 2, 220, true);
     M5.Display.setCursor(kPadding, kHeaderHeight + 320);
     M5.Display.printf("glyph_found=%u missing=%u", stats.glyph_found, stats.glyph_missing);
-    setStatus(String("Glyph render ") + stats.render_us + " us", "See serial for per-glyph widths");
+    setStatus(String("Glyph render ") + stats.render_us + " us", String("EPD ") + epdModeName(g_epdRefreshMode) + " | see serial for widths");
     drawFooter();
-    M5.Display.display();
+    displayCurrentFrame();
     logGlyphMetrics();
 }
 
-void drawBenchmarkCaseScreen(size_t caseIndex) {
-    beginContent();
-    drawHeader("Benchmark Run");
-    M5.Display.setCursor(kPadding, kHeaderHeight + 12);
-    M5.Display.printf("Auto case %u/%u", (unsigned)(caseIndex + 1), (unsigned)kBenchmarkCaseCount);
-
-    const BenchmarkCase& item = g_benchmarkCases[caseIndex];
-    g_renderer.drawText(item.text, kPadding, kHeaderHeight + 48, g_screenWidth - kPadding * 2, g_screenHeight - kHeaderHeight - kFooterHeight - 56, true);
-    setStatus(String(item.label) + " running", String(countUtf8Chars(item.text)) + " chars");
-    drawFooter();
-    M5.Display.display();
+void prepareBenchmarkFramebuffer(const BenchmarkCase& item, RenderStats& statsOut) {
+    M5.Display.fillRect(contentX(), contentY(), contentWidth(), contentHeight(), TFT_WHITE);
+    g_renderer.setRenderMode(M5FontRenderer::RenderMode::Text);
+    statsOut = g_renderer.drawText(item.text, contentX(), contentY(), contentWidth(), contentHeight(), true);
 }
 
-BenchmarkSummary measureBenchmarkCase(const BenchmarkCase& item) {
+BenchmarkSummary measureDirectCase(const BenchmarkCase& item) {
     BenchmarkSummary summary;
     summary.label = item.label;
     summary.charCount = countUtf8Chars(item.text);
 
-    g_renderer.clearCaches();
     for (uint32_t index = 0; index < kBenchmarkIterations; ++index) {
-        M5.Display.fillRect(kPadding, kHeaderHeight + 48, g_screenWidth - kPadding * 2, g_screenHeight - kHeaderHeight - kFooterHeight - 56, TFT_WHITE);
-        RenderStats stats = g_renderer.drawText(item.text, kPadding, kHeaderHeight + 48, g_screenWidth - kPadding * 2, g_screenHeight - kHeaderHeight - kFooterHeight - 56, true);
+        RenderStats stats;
+        prepareBenchmarkFramebuffer(item, stats);
+        applyCurrentEpdMode();
+        const uint32_t startUs = micros();
+        M5.Display.display(contentX(), contentY(), contentWidth(), contentHeight());
+        const uint32_t elapsedUs = micros() - startUs;
         summary.iterations++;
-        summary.totalUs += stats.render_us;
-        if (stats.render_us > summary.maxUs) {
-            summary.maxUs = stats.render_us;
+        summary.totalUs += elapsedUs;
+        if (elapsedUs > summary.maxUs) {
+            summary.maxUs = elapsedUs;
         }
         summary.lastStats = stats;
     }
@@ -349,12 +421,84 @@ BenchmarkSummary measureBenchmarkCase(const BenchmarkCase& item) {
     return summary;
 }
 
+BenchmarkSummary measureStripeCase(const BenchmarkCase& item) {
+    BenchmarkSummary summary;
+    summary.label = item.label;
+    summary.charCount = countUtf8Chars(item.text);
+    const int stripeWidth = (contentWidth() + (int)kStripeCount - 1) / (int)kStripeCount;
+
+    for (uint32_t index = 0; index < kBenchmarkIterations; ++index) {
+        RenderStats stats;
+        prepareBenchmarkFramebuffer(item, stats);
+
+        const uint32_t startUs = micros();
+        applyCurrentEpdMode();
+        for (size_t stripe = 0; stripe < kStripeCount; ++stripe) {
+            const int xs = contentX() + (int)stripe * stripeWidth;
+            if (xs >= contentX() + contentWidth()) {
+                break;
+            }
+            const int width = std::min(stripeWidth, contentX() + contentWidth() - xs);
+            displayCurrentRegion(xs, contentY(), width, contentHeight());
+        }
+
+        for (size_t stripe = 1; stripe < kStripeCount; ++stripe) {
+            int bandX = contentX() + (int)stripe * stripeWidth - (kStripeOverlapPx / 2);
+            if (bandX < contentX()) {
+                bandX = contentX();
+            }
+            int bandWidth = kStripeOverlapPx;
+            if (bandX + bandWidth > contentX() + contentWidth()) {
+                bandWidth = contentX() + contentWidth() - bandX;
+            }
+            if (bandWidth > 0) {
+                displayCurrentRegion(bandX, contentY(), bandWidth, contentHeight());
+            }
+        }
+        const uint32_t elapsedUs = micros() - startUs;
+
+        summary.iterations++;
+        summary.totalUs += elapsedUs;
+        if (elapsedUs > summary.maxUs) {
+            summary.maxUs = elapsedUs;
+        }
+        summary.lastStats = stats;
+    }
+
+    if (summary.iterations > 0) {
+        summary.averageUs = summary.totalUs / summary.iterations;
+    }
+    return summary;
+}
+
+void drawBenchmarkRunningScreen(size_t caseIndex) {
+    beginContent();
+    drawHeader("Benchmark Run");
+    M5.Display.setCursor(kPadding, kHeaderHeight + 12);
+    M5.Display.printf("Mode %s | EPD %s | case %u/%u",
+                      benchmarkModeName(g_benchmarkMode),
+                      epdModeName(g_epdRefreshMode),
+                      (unsigned)(caseIndex + 1),
+                      (unsigned)kBenchmarkCaseCount);
+
+    const BenchmarkCase& item = g_benchmarkCases[caseIndex];
+    g_renderer.drawText(item.text, contentX(), contentY(), contentWidth(), contentHeight(), true);
+    setStatus(String(item.label) + " running", String("EPD ") + epdModeName(g_epdRefreshMode) + " | " + countUtf8Chars(item.text) + " chars");
+    drawFooter();
+    displayCurrentFrame();
+}
+
 void printBenchmarkSummary() {
-    Serial.println("[bench-suite] begin");
+    Serial.printf("[bench-suite] begin mode=%s epd=%s iterations=%u\n",
+                  benchmarkModeName(g_benchmarkMode),
+                  epdModeName(g_epdRefreshMode),
+                  (unsigned)kBenchmarkIterations);
     for (size_t i = 0; i < kBenchmarkCaseCount; ++i) {
         const BenchmarkSummary& item = g_benchmarkResults[i];
         Serial.printf(
-            "[bench-suite] %s chars=%u iterations=%u avg=%u max=%u total=%u glyph_found=%u bmp_hit=%u dec_hit=%u\n",
+            "[bench-suite] mode=%s epd=%s %s chars=%u iterations=%u avg=%u max=%u total=%u glyph_found=%u bmp_hit=%u dec_hit=%u\n",
+            benchmarkModeName(g_benchmarkMode),
+            epdModeName(g_epdRefreshMode),
             item.label,
             item.charCount,
             item.iterations,
@@ -373,7 +517,10 @@ void drawBenchmarkSummaryPage() {
     beginContent();
     drawHeader("Benchmark Summary");
     M5.Display.setCursor(kPadding, kHeaderHeight + 12);
-    M5.Display.printf("5 cases x %u iterations", (unsigned)kBenchmarkIterations);
+    M5.Display.printf("Mode %s | EPD %s | 5 cases x %u",
+                      benchmarkModeName(g_benchmarkMode),
+                      epdModeName(g_epdRefreshMode),
+                      (unsigned)kBenchmarkIterations);
 
     int y = kHeaderHeight + 46;
     for (size_t i = 0; i < kBenchmarkCaseCount; ++i) {
@@ -386,18 +533,31 @@ void drawBenchmarkSummaryPage() {
         y += 28;
     }
 
-    setStatus("Auto benchmark complete", "Check serial for full results");
+    setStatus(String("Mode ") + benchmarkModeName(g_benchmarkMode), String("EPD ") + epdModeName(g_epdRefreshMode) + " | touch header buttons");
     drawFooter();
-    M5.Display.display();
+    displayCurrentFrame();
 }
 
 void runBenchmarkSuite() {
-    Serial.printf("[boot] auto benchmark enabled: cases=%u iterations=%u\n", (unsigned)kBenchmarkCaseCount, (unsigned)kBenchmarkIterations);
+    Serial.printf("[boot] benchmark mode=%s epd=%s cases=%u iterations=%u stripes=%u overlap=%d\n",
+                  benchmarkModeName(g_benchmarkMode),
+                  epdModeName(g_epdRefreshMode),
+                  (unsigned)kBenchmarkCaseCount,
+                  (unsigned)kBenchmarkIterations,
+                  (unsigned)kStripeCount,
+                  kStripeOverlapPx);
+
     for (size_t i = 0; i < kBenchmarkCaseCount; ++i) {
-        drawBenchmarkCaseScreen(i);
-        g_benchmarkResults[i] = measureBenchmarkCase(g_benchmarkCases[i]);
+        drawBenchmarkRunningScreen(i);
+        if (g_benchmarkMode == BenchmarkMode::Stripe) {
+            g_benchmarkResults[i] = measureStripeCase(g_benchmarkCases[i]);
+        } else {
+            g_benchmarkResults[i] = measureDirectCase(g_benchmarkCases[i]);
+        }
         Serial.printf(
-            "[bench-case] %s chars=%u avg=%u max=%u total=%u\n",
+            "[bench-case] mode=%s epd=%s %s chars=%u avg=%u max=%u total=%u\n",
+            benchmarkModeName(g_benchmarkMode),
+            epdModeName(g_epdRefreshMode),
             g_benchmarkResults[i].label,
             g_benchmarkResults[i].charCount,
             g_benchmarkResults[i].averageUs,
@@ -435,15 +595,55 @@ void renderCurrentPage() {
 
 void switchPage(Page page) {
     g_page = page;
-    if (page != Page::Benchmark) {
-        renderCurrentPage();
-        return;
+    if (page == Page::Benchmark) {
+        g_benchmarkRan = false;
+    }
+    renderCurrentPage();
+}
+
+void toggleBenchmarkMode() {
+    g_benchmarkMode = (g_benchmarkMode == BenchmarkMode::Direct)
+        ? BenchmarkMode::Stripe
+        : BenchmarkMode::Direct;
+    g_benchmarkRan = false;
+    Serial.printf("[mode] benchmark=%s epd=%s\n", benchmarkModeName(g_benchmarkMode), epdModeName(g_epdRefreshMode));
+    renderCurrentPage();
+}
+
+void toggleEpdMode() {
+    switch (g_epdRefreshMode) {
+        case EpdRefreshMode::Fast:
+            g_epdRefreshMode = EpdRefreshMode::Text;
+            break;
+        case EpdRefreshMode::Text:
+            g_epdRefreshMode = EpdRefreshMode::Quality;
+            break;
+        case EpdRefreshMode::Quality:
+            g_epdRefreshMode = EpdRefreshMode::Fastest;
+            break;
+        case EpdRefreshMode::Fastest:
+        default:
+            g_epdRefreshMode = EpdRefreshMode::Fast;
+            break;
     }
     g_benchmarkRan = false;
+    Serial.printf("[mode] benchmark=%s epd=%s\n", benchmarkModeName(g_benchmarkMode), epdModeName(g_epdRefreshMode));
     renderCurrentPage();
 }
 
 void handleTouch(int x, int y) {
+    if (x >= modeButtonX() && x <= modeButtonX() + kModeButtonWidth
+        && y >= modeButtonY() && y <= modeButtonY() + kModeButtonHeight) {
+        toggleBenchmarkMode();
+        return;
+    }
+
+    if (x >= epdButtonX() && x <= epdButtonX() + kEpdButtonWidth
+        && y >= modeButtonY() && y <= modeButtonY() + kModeButtonHeight) {
+        toggleEpdMode();
+        return;
+    }
+
     const int footerTop = g_screenHeight - kFooterHeight;
     const int buttonTop = footerTop + 10;
     const int buttonWidth = (g_screenWidth - (kPadding * 2) - (kButtonGap * 2)) / 3;
@@ -481,7 +681,7 @@ void PaperS3Demo_setup() {
     setStatus("Booting PaperS3 demo", "Preparing storage and font runtime");
     drawHeader("Startup");
     drawFooter();
-    M5.Display.display();
+    displayCurrentFrame();
 
     mountStorage();
     if (!loadFont()) {
