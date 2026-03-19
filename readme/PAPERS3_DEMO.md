@@ -49,3 +49,8 @@ pio device monitor -p /dev/cu.usbmodem2101 -b 115200
 - `/fonts/霞鹜文楷32.bin`
 - `/font/霞鹜文楷32.bin`
 
+
+## Related app
+
+- `papers3-edc` is the task-device MVP built on the same PaperS3 stack
+- See `readme/PAPERS3_EDC.md` for the new app flow and build steps
