@@ -8,6 +8,7 @@
 #include <WiFi.h>
 
 #include "PaperS3EDCFontManager.h"
+#include "PaperS3EDCLayout.h"
 #include "PaperS3EDCModel.h"
 #include "PaperS3EDCRenderer.h"
 #include "PaperS3EDCStorage.h"
@@ -17,20 +18,6 @@ namespace papers3edc {
 namespace {
 constexpr uint32_t kTouchDebounceMs = 180;
 constexpr uint32_t kStatusRefreshMs = 2000;
-constexpr int kPadding = 18;
-constexpr int kFooterHeight = 62;
-constexpr int kFooterTop = 540 - kFooterHeight;
-constexpr int kFooterButtonGap = 10;
-constexpr int kFooterButtonCount = 4;
-constexpr int kSettingsTop = 154;
-constexpr int kSettingsRowHeight = 58;
-constexpr int kBodyTop = 74;
-constexpr int kWifiRowTop = 116;
-constexpr int kWifiRowHeight = 52;
-constexpr int kKeyboardStartY = 182;
-constexpr int kKeyboardKeyW = 72;
-constexpr int kKeyboardKeyH = 42;
-constexpr int kKeyboardGap = 8;
 constexpr const char* kWeekdayCn[] = {"星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"};
 
 class PaperS3EDCController {
@@ -63,6 +50,7 @@ private:
     PaperS3EDCRenderer _renderer;
     PaperS3EDCStorage _storage;
     PaperS3EDCSyncService _sync;
+    LayoutMetrics _layout{};
     bool _touchActive = false;
     uint32_t _lastTouchMs = 0;
     uint32_t _lastStatusRefreshMs = 0;
@@ -230,13 +218,12 @@ void PaperS3EDCController::connectConfiguredWifi() {
 }
 
 void PaperS3EDCController::handleWifiPasswordTouch(int x, int y) {
-    if (y < kKeyboardStartY) return;
-    const int row = (y - kKeyboardStartY) / (kKeyboardKeyH + kKeyboardGap);
-    const int col = (x - kPadding) / (kKeyboardKeyW + kKeyboardGap);
+    if (y < _layout.keyboardTop) return;
+    const int row = (y - _layout.keyboardTop) / (_layout.keyboardKeyH + _layout.keyboardGap);
+    const int col = (x - _layout.padding) / (_layout.keyboardKeyW + _layout.keyboardGap);
     if (row < 0 || row >= 4 || col < 0 || col >= 10) return;
-    const int keyX = kPadding + col * (kKeyboardKeyW + kKeyboardGap);
-    const int keyY = kKeyboardStartY + row * (kKeyboardKeyH + kKeyboardGap);
-    if (x > keyX + kKeyboardKeyW || y > keyY + kKeyboardKeyH) return;
+    const RectBox keyRect = _layout.keyboardKeyRect(row, col);
+    if (!keyRect.contains(x, y)) return;
 
     static const char* lowerRows[4][10] = {
         {"1","2","3","4","5","6","7","8","9","0"},
@@ -283,14 +270,12 @@ void PaperS3EDCController::showPage(AppPage page) {
 }
 
 void PaperS3EDCController::handleFooterTouch(int x, int y) {
-    if (y < kFooterTop + 10) {
+    if (y < _layout.footerTop + 10) {
         return;
     }
-    const int buttonWidth = (M5.Display.width() - kPadding * 2 - kFooterButtonGap * (kFooterButtonCount - 1)) / kFooterButtonCount;
-    for (int index = 0; index < kFooterButtonCount; ++index) {
-        const int left = kPadding + index * (buttonWidth + kFooterButtonGap);
-        const int right = left + buttonWidth;
-        if (x >= left && x <= right) {
+    for (int index = 0; index < 4; ++index) {
+        RectBox rect = _layout.footerButtonRect(index);
+        if (rect.contains(x, y)) {
             switch (index) {
                 case 0:
                     showPage(AppPage::Today);
@@ -310,104 +295,104 @@ void PaperS3EDCController::handleFooterTouch(int x, int y) {
 }
 
 void PaperS3EDCController::handleTouch(int x, int y) {
-    if (y >= kFooterTop) {
+    if (y >= _layout.footerTop) {
         handleFooterTouch(x, y);
         return;
     }
 
     if (_state.currentPage == AppPage::Today) {
-        const int listTop = 124;
-        const int rowHeight = 68;
         for (size_t index = 0; index < _state.taskCount; ++index) {
-            const int top = listTop + (int)index * rowHeight;
-            const int bottom = top + 58;
-            if (y >= top && y <= bottom) {
-                _state.selectedTaskIndex = (int)index;
-                if (_state.tasks[index].status != TaskStatus::Done) {
-                    _state.armedTaskIndex = (int)index;
-                    _state.tasks[index].status = TaskStatus::Armed;
-                    setStatus("任务已选中", "请确认完成");
-                    showPage(AppPage::Confirm);
-                }
-                return;
+            RectBox row = _layout.taskRowRect((int)index);
+            if (!row.contains(x, y)) {
+                continue;
             }
+            _state.selectedTaskIndex = (int)index;
+            if (_state.tasks[index].status != TaskStatus::Done) {
+                _state.armedTaskIndex = (int)index;
+                _state.tasks[index].status = TaskStatus::Armed;
+                setStatus("任务已选中", "请确认完成");
+                showPage(AppPage::Confirm);
+            }
+            return;
         }
         return;
     }
 
     if (_state.currentPage == AppPage::Confirm) {
-        const int buttonY = 374;
-        const int buttonW = (M5.Display.width() - kPadding * 2 - 16) / 2;
-        if (y >= buttonY && y <= buttonY + 44) {
-            if (x >= kPadding && x <= kPadding + buttonW) {
-                if (_state.armedTaskIndex >= 0 && _state.armedTaskIndex < (int)_state.taskCount && _state.tasks[_state.armedTaskIndex].status == TaskStatus::Armed) {
-                    _state.tasks[_state.armedTaskIndex].status = TaskStatus::Pending;
-                }
-                _state.armedTaskIndex = -1;
-                setStatus("已取消", "返回今日页");
-                refreshCounts();
-                showPage(AppPage::Today);
-                return;
+        RectBox backRect = _layout.confirmBackRect();
+        RectBox doneRect = _layout.confirmDoneRect();
+        if (backRect.contains(x, y)) {
+            if (_state.armedTaskIndex >= 0
+                && _state.armedTaskIndex < (int)_state.taskCount
+                && _state.tasks[_state.armedTaskIndex].status == TaskStatus::Armed) {
+                _state.tasks[_state.armedTaskIndex].status = TaskStatus::Pending;
             }
-            const int confirmX = kPadding + buttonW + 16;
-            if (x >= confirmX && x <= confirmX + buttonW && _state.armedTaskIndex >= 0 && _state.armedTaskIndex < (int)_state.taskCount) {
-                TaskItem& task = _state.tasks[_state.armedTaskIndex];
-                task.status = TaskStatus::Done;
-                task.dirty = true;
-                if (_state.pendingEventCount < kMaxPendingEvents) {
-                    PendingEvent& event = _state.pendingEvents[_state.pendingEventCount++];
-                    event.taskId = task.id;
-                    event.points = task.points;
-                    event.completedAt = millis();
-                }
-                _state.summary.totalPoints += task.points;
-                _state.contribution[millis() % kContributionCellCount].level = 3;
-                _state.armedTaskIndex = -1;
-                refreshCounts();
-                setStatus("任务已完成", "积分已累计");
-                persistState();
-                showPage(AppPage::Today);
-                return;
+            _state.armedTaskIndex = -1;
+            setStatus("已取消", "返回今日页");
+            refreshCounts();
+            showPage(AppPage::Today);
+            return;
+        }
+        if (doneRect.contains(x, y)
+            && _state.armedTaskIndex >= 0
+            && _state.armedTaskIndex < (int)_state.taskCount) {
+            TaskItem& task = _state.tasks[_state.armedTaskIndex];
+            task.status = TaskStatus::Done;
+            task.dirty = true;
+            if (_state.pendingEventCount < kMaxPendingEvents) {
+                PendingEvent& event = _state.pendingEvents[_state.pendingEventCount++];
+                event.taskId = task.id;
+                event.points = task.points;
+                event.completedAt = millis();
             }
+            _state.summary.totalPoints += task.points;
+            _state.contribution[millis() % kContributionCellCount].level = 3;
+            _state.armedTaskIndex = -1;
+            refreshCounts();
+            setStatus("任务已完成", "积分已累计");
+            persistState();
+            showPage(AppPage::Today);
+            return;
         }
         return;
     }
 
     if (_state.currentPage == AppPage::Settings) {
         for (int index = 0; index < 3; ++index) {
-            const int top = kSettingsTop + index * kSettingsRowHeight;
-            if (y >= top && y <= top + 42) {
-                _state.focusedSettingsIndex = index;
-                if (index == 0) {
-                    scanWifiNetworks();
-                    showPage(AppPage::WifiList);
-                } else if (index == 1) {
-                    _sync.pushPendingEvents(_state);
-                    persistState();
-                    persistConfig();
-                    showPage(AppPage::SyncStatus);
-                } else {
-                    showPage(AppPage::Today);
-                }
-                return;
+            RectBox row = _layout.settingsRowRect(index);
+            if (!row.contains(x, y)) {
+                continue;
             }
+            _state.focusedSettingsIndex = index;
+            if (index == 0) {
+                scanWifiNetworks();
+                showPage(AppPage::WifiList);
+            } else if (index == 1) {
+                _sync.pushPendingEvents(_state);
+                persistState();
+                persistConfig();
+                showPage(AppPage::SyncStatus);
+            } else {
+                showPage(AppPage::Today);
+            }
+            return;
         }
         return;
     }
 
     if (_state.currentPage == AppPage::WifiList) {
-        const int listTop = kWifiRowTop;
         for (size_t index = 0; index < std::min<size_t>(_state.wifiNetworkCount, 6); ++index) {
-            const int top = listTop + (int)index * 52;
-            if (y >= top && y <= top + 40) {
-                _state.focusedWifiIndex = (int)index;
-                copyText(_state.config.ssid, sizeof(_state.config.ssid), _state.wifiNetworks[index].ssid);
-                memset(_state.passwordBuffer, 0, sizeof(_state.passwordBuffer));
-                _state.passwordUppercase = false;
-                setStatus("已选择网络", _state.config.ssid);
-                showPage(AppPage::WifiPassword);
-                return;
+            RectBox row = _layout.wifiRowRect((int)index);
+            if (!row.contains(x, y)) {
+                continue;
             }
+            _state.focusedWifiIndex = (int)index;
+            copyText(_state.config.ssid, sizeof(_state.config.ssid), _state.wifiNetworks[index].ssid);
+            memset(_state.passwordBuffer, 0, sizeof(_state.passwordBuffer));
+            _state.passwordUppercase = false;
+            setStatus("已选择网络", _state.config.ssid);
+            showPage(AppPage::WifiPassword);
+            return;
         }
         return;
     }
@@ -429,6 +414,7 @@ void PaperS3EDCController::begin() {
     Serial.begin(115200);
     delay(300);
     _renderer.begin();
+    _layout = LayoutMetrics::portrait(M5.Display.width(), M5.Display.height());
     mountStorage();
     _state.fontReady = _fonts.load(_state.littleFsReady, _state.sdReady);
     seedFakeState();

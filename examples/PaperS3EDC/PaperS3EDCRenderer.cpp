@@ -6,17 +6,9 @@
 namespace papers3edc {
 namespace {
 constexpr int kStatusHeight = 54;
-constexpr int kFooterHeight = 62;
-constexpr int kPadding = 18;
-constexpr int kBodyTop = kStatusHeight + 20;
-constexpr int kBodyBottomMargin = kFooterHeight + 16;
-constexpr int kTaskRowHeight = 58;
 constexpr int kTaskMarkerSize = 22;
-constexpr int kTaskGap = 10;
 constexpr int kSectionGap = 16;
 constexpr int kTitleLineHeight = 38;
-constexpr int kFooterButtonGap = 10;
-constexpr int kFooterButtonHeight = 34;
 constexpr int kKeyboardRows = 4;
 constexpr int kKeyboardCols = 10;
 constexpr const char* kTabLabels[] = {"今日", "成长", "屏保", "配置"};
@@ -70,12 +62,13 @@ PaperS3EDCRenderer::PaperS3EDCRenderer(lgfx::LGFXBase* display, PaperS3EDCFontMa
     : _display(display), _fonts(fonts) {}
 
 void PaperS3EDCRenderer::begin() {
-    _display->setRotation(1);
+    _display->setRotation(0);
     _display->setTextColor(TFT_BLACK, TFT_WHITE);
     _display->setTextSize(1);
     _display->setFont(&fonts::Font2);
     _width = _display->width();
     _height = _display->height();
+    _layout = LayoutMetrics::portrait(_width, _height);
 }
 
 void PaperS3EDCRenderer::applyEpdMode() {
@@ -107,33 +100,33 @@ void PaperS3EDCRenderer::render(const AppState& state) {
 }
 
 void PaperS3EDCRenderer::drawStatusBar(const AppState& state) {
-    _display->fillRect(0, 0, _width, kStatusHeight, TFT_WHITE);
-    _display->drawLine(0, kStatusHeight - 1, _width, kStatusHeight - 1, TFT_BLACK);
+    _display->fillRect(0, 0, _width, _layout.statusHeight, TFT_WHITE);
+    _display->drawLine(0, _layout.statusHeight - 1, _width, _layout.statusHeight - 1, TFT_BLACK);
     _display->setFont(&fonts::Font2);
-    _display->setCursor(kPadding, 10);
+    _display->setCursor(_layout.padding, 10);
     _display->printf("%s", pageTitle(state.currentPage));
 
-    drawBatteryBar(_width - 200, 10, 56, 18, state.summary.batteryPercent, state.summary.charging);
+    drawBatteryBar(_width - 132, 10, 42, 18, state.summary.batteryPercent, state.summary.charging);
 
-    _display->setCursor(_width - 132, 12);
+    _display->setCursor(_width - 82, 12);
     _display->printf("%u/%u", state.summary.completedTasks, state.summary.totalTasks);
-    _display->setCursor(_width - 132, 30);
+    _display->setCursor(_width - 82, 30);
     _display->printf("%s", syncStateName(state.syncState));
 }
 
 void PaperS3EDCRenderer::drawBottomTabs(const AppState& state) {
-    const int y = _height - kFooterHeight;
+    const int y = _layout.footerTop;
     _display->drawLine(0, y, _width, y, TFT_BLACK);
-    const int buttonWidth = (_width - kPadding * 2 - kFooterButtonGap * 3) / 4;
+    const int buttonWidth = _layout.footerButtonWidth();
     for (int index = 0; index < 4; ++index) {
-        const int x = kPadding + index * (buttonWidth + kFooterButtonGap);
+        const int x = _layout.footerButtonRect(index).x;
         const bool active = ((index == 0 && state.currentPage == AppPage::Today)
                           || (index == 1 && state.currentPage == AppPage::Progress)
                           || (index == 2 && state.currentPage == AppPage::Screensaver)
                           || (index == 3 && (state.currentPage == AppPage::Settings || state.currentPage == AppPage::WifiList || state.currentPage == AppPage::WifiPassword || state.currentPage == AppPage::SyncStatus)));
-        _display->drawRect(x, y + 10, buttonWidth, kFooterButtonHeight, TFT_BLACK);
+        _display->drawRect(x, y + 10, buttonWidth, _layout.footerButtonHeight, TFT_BLACK);
         if (active) {
-            _display->fillRect(x + 1, y + 11, buttonWidth - 2, kFooterButtonHeight - 2, TFT_BLACK);
+            _display->fillRect(x + 1, y + 11, buttonWidth - 2, _layout.footerButtonHeight - 2, TFT_BLACK);
             _display->setTextColor(TFT_WHITE, TFT_BLACK);
         } else {
             _display->setTextColor(TFT_BLACK, TFT_WHITE);
@@ -142,7 +135,7 @@ void PaperS3EDCRenderer::drawBottomTabs(const AppState& state) {
         _display->print(kTabLabels[index]);
     }
     _display->setTextColor(TFT_BLACK, TFT_WHITE);
-    _display->setCursor(kPadding, y + 48);
+    _display->setCursor(_layout.padding, y + 50);
     _display->printf("%s", state.statusLine);
     _display->setCursor(_width / 2, y + 48);
     _display->printf("%s", state.statusDetail);
@@ -165,46 +158,46 @@ void PaperS3EDCRenderer::drawTaskMarker(int x, int y, int w, int h, TaskStatus s
 
 void PaperS3EDCRenderer::drawTodayPage(const AppState& state) {
     _display->setFont(&fonts::Font2);
-    _display->setCursor(kPadding, kBodyTop);
+    _display->setCursor(_layout.padding, _layout.bodyTop);
     _display->printf("%s · %s", state.summary.dateTitle, state.summary.weekLabel);
 
     if (_fonts && _fonts->isReady()) {
-        _fonts->drawText("今天要完成的事", kPadding, kBodyTop + 24, _width - kPadding * 2, 36, false);
+        _fonts->drawText("今天要完成的事", _layout.padding, _layout.bodyTop + 28, _width - _layout.padding * 2, 36, false);
     }
 
-    const int listTop = kBodyTop + 70;
-    const int listBottom = _height - kBodyBottomMargin;
-    const int availableRows = std::max(1, (listBottom - listTop) / (kTaskRowHeight + kTaskGap));
+    const int listTop = _layout.taskListTop;
+    const int listBottom = _layout.bodyBottom;
+    const int availableRows = std::max(1, (listBottom - listTop) / (_layout.taskRowHeight + _layout.taskGap));
     const bool fallback = (int)state.taskCount > availableRows;
 
     if (fallback) {
-        _display->drawRect(kPadding, listTop, _width - kPadding * 2, 164, TFT_BLACK);
-        _display->setCursor(kPadding + 16, listTop + 20);
+        _display->drawRect(_layout.padding, listTop, _width - _layout.padding * 2, 164, TFT_BLACK);
+        _display->setCursor(_layout.padding + 16, listTop + 20);
         _display->print("今日任务较多，已切换为总览模式");
-        _display->setCursor(kPadding + 16, listTop + 58);
+        _display->setCursor(_layout.padding + 16, listTop + 58);
         _display->printf("共 %u 项", state.summary.totalTasks);
-        _display->setCursor(kPadding + 16, listTop + 90);
+        _display->setCursor(_layout.padding + 16, listTop + 90);
         _display->printf("已完成 %u 项", state.summary.completedTasks);
-        _display->setCursor(kPadding + 16, listTop + 122);
+        _display->setCursor(_layout.padding + 16, listTop + 122);
         _display->printf("今日积分 %u", state.summary.dayPoints);
         return;
     }
 
     for (size_t index = 0; index < state.taskCount; ++index) {
-        const int rowY = listTop + (int)index * (kTaskRowHeight + kTaskGap);
+        const int rowY = listTop + (int)index * (_layout.taskRowHeight + _layout.taskGap);
         const bool selected = ((int)index == state.selectedTaskIndex);
-        _display->drawRect(kPadding, rowY, _width - kPadding * 2, kTaskRowHeight, TFT_BLACK);
+        _display->drawRect(_layout.padding, rowY, _width - _layout.padding * 2, _layout.taskRowHeight, TFT_BLACK);
         if (selected) {
-            _display->fillRect(kPadding + 1, rowY + 1, _width - kPadding * 2 - 2, kTaskRowHeight - 2, TFT_WHITE);
+            _display->fillRect(_layout.padding + 1, rowY + 1, _width - _layout.padding * 2 - 2, _layout.taskRowHeight - 2, TFT_WHITE);
         }
-        drawTaskMarker(kPadding + 12, rowY + 18, kTaskMarkerSize, kTaskMarkerSize, state.tasks[index].status, selected && state.currentPage == AppPage::Confirm);
+        drawTaskMarker(_layout.padding + 12, rowY + 18, kTaskMarkerSize, kTaskMarkerSize, state.tasks[index].status, selected && state.currentPage == AppPage::Confirm);
         if (_fonts && _fonts->isReady()) {
-            _fonts->drawText(state.tasks[index].title, kPadding + 48, rowY + 10, _width - kPadding * 2 - 132, 40, true);
+            _fonts->drawText(state.tasks[index].title, _layout.padding + 48, rowY + 10, _width - _layout.padding * 2 - 120, 40, true);
         } else {
-            _display->setCursor(kPadding + 48, rowY + 16);
+            _display->setCursor(_layout.padding + 48, rowY + 16);
             _display->printf("%s", state.tasks[index].title);
         }
-        _display->setCursor(_width - 94, rowY + 18);
+        _display->setCursor(_width - 72, rowY + 18);
         _display->printf("+%u", state.tasks[index].points);
     }
 }
@@ -215,46 +208,46 @@ void PaperS3EDCRenderer::drawConfirmPage(const AppState& state) {
         return;
     }
     const TaskItem& task = state.tasks[state.armedTaskIndex];
-    _display->drawRect(kPadding, kBodyTop, _width - kPadding * 2, 220, TFT_BLACK);
-    _display->setCursor(kPadding + 18, kBodyTop + 20);
+    _display->drawRect(_layout.padding, _layout.bodyTop, _width - _layout.padding * 2, _layout.confirmCardHeight, TFT_BLACK);
+    _display->setCursor(_layout.padding + 18, _layout.bodyTop + 20);
     _display->print("确认完成以下任务");
     if (_fonts && _fonts->isReady()) {
-        _fonts->drawText(task.title, kPadding + 18, kBodyTop + 58, _width - kPadding * 2 - 36, 84, true);
+        _fonts->drawText(task.title, _layout.padding + 18, _layout.bodyTop + 58, _width - _layout.padding * 2 - 36, 110, true);
     }
-    _display->setCursor(kPadding + 18, kBodyTop + 160);
+    _display->setCursor(_layout.padding + 18, _layout.bodyTop + 184);
     _display->printf("完成后将获得 %u 积分", task.points);
 
-    const int buttonY = kBodyTop + 250;
-    const int buttonW = (_width - kPadding * 2 - 16) / 2;
-    _display->drawRect(kPadding, buttonY, buttonW, 44, TFT_BLACK);
-    _display->setCursor(kPadding + buttonW / 2 - 14, buttonY + 12);
+    const RectBox backRect = _layout.confirmBackRect();
+    const RectBox doneRect = _layout.confirmDoneRect();
+    _display->drawRect(backRect.x, backRect.y, backRect.w, backRect.h, TFT_BLACK);
+    _display->setCursor(backRect.x + backRect.w / 2 - 14, backRect.y + 12);
     _display->print("返回");
-    _display->fillRect(kPadding + buttonW + 16, buttonY, buttonW, 44, TFT_BLACK);
+    _display->fillRect(doneRect.x, doneRect.y, doneRect.w, doneRect.h, TFT_BLACK);
     _display->setTextColor(TFT_WHITE, TFT_BLACK);
-    _display->setCursor(kPadding + buttonW + 16 + buttonW / 2 - 28, buttonY + 12);
+    _display->setCursor(doneRect.x + doneRect.w / 2 - 28, doneRect.y + 12);
     _display->print("确认完成");
     _display->setTextColor(TFT_BLACK, TFT_WHITE);
 }
 
 void PaperS3EDCRenderer::drawProgressPage(const AppState& state) {
-    _display->setCursor(kPadding, kBodyTop);
+    _display->setCursor(_layout.padding, _layout.bodyTop);
     _display->printf("累计积分 %u", state.summary.totalPoints);
-    _display->setCursor(kPadding + 220, kBodyTop);
+    _display->setCursor(_layout.padding, _layout.bodyTop + 30);
     _display->printf("连续 %u 天", state.summary.streakDays);
-    _display->drawRect(kPadding, kBodyTop + 34, _width - kPadding * 2, 120, TFT_BLACK);
-    _display->setCursor(kPadding + 14, kBodyTop + 48);
+    _display->drawRect(_layout.padding, _layout.bodyTop + 74, _width - _layout.padding * 2, 120, TFT_BLACK);
+    _display->setCursor(_layout.padding + 14, _layout.bodyTop + 92);
     _display->printf("今日完成 %u / %u", state.summary.completedTasks, state.summary.totalTasks);
-    _display->setCursor(kPadding + 14, kBodyTop + 84);
+    _display->setCursor(_layout.padding + 14, _layout.bodyTop + 128);
     _display->printf("今日新增积分 %u", state.summary.dayPoints);
 
-    const int gridTop = kBodyTop + 184;
+    const int gridTop = _layout.bodyTop + 230;
     const int cellW = 24;
     const int cellH = 20;
     const int gap = 6;
     for (size_t index = 0; index < kContributionCellCount; ++index) {
         const int row = index / 7;
         const int col = index % 7;
-        const int x = kPadding + col * (cellW + gap);
+        const int x = _layout.padding + col * (cellW + gap);
         const int y = gridTop + row * (cellH + gap);
         _display->drawRect(x, y, cellW, cellH, TFT_BLACK);
         const uint8_t level = state.contribution[index].level;
@@ -267,90 +260,90 @@ void PaperS3EDCRenderer::drawProgressPage(const AppState& state) {
         }
     }
 
-    _display->setCursor(kPadding + 220, gridTop + 16);
+    _display->setCursor(_layout.padding, gridTop + 124);
     _display->print("成长贡献图");
-    _display->setCursor(kPadding + 220, gridTop + 52);
+    _display->setCursor(_layout.padding, gridTop + 152);
     _display->print("浅灰=开始");
-    _display->setCursor(kPadding + 220, gridTop + 80);
+    _display->setCursor(_layout.padding, gridTop + 180);
     _display->print("深灰=全部完成");
 }
 
 void PaperS3EDCRenderer::drawScreensaverPage(const AppState& state) {
     if (_fonts && _fonts->isReady()) {
-        _fonts->drawText(state.summary.dateTitle, kPadding, kBodyTop, _width - kPadding * 2, 50, false);
+        _fonts->drawText(state.summary.dateTitle, _layout.padding, _layout.bodyTop, _width - _layout.padding * 2, 56, false);
     } else {
-        _display->setCursor(kPadding, kBodyTop);
+        _display->setCursor(_layout.padding, _layout.bodyTop);
         _display->printf("%s", state.summary.dateTitle);
     }
-    _display->setCursor(kPadding, kBodyTop + 58);
+    _display->setCursor(_layout.padding, _layout.bodyTop + 62);
     _display->printf("%s", state.summary.weekLabel);
-    _display->drawLine(kPadding, kBodyTop + 86, _width - kPadding, kBodyTop + 86, TFT_BLACK);
-    _display->setCursor(kPadding, kBodyTop + 108);
+    _display->drawLine(_layout.padding, _layout.bodyTop + 92, _width - _layout.padding, _layout.bodyTop + 92, TFT_BLACK);
+    _display->setCursor(_layout.padding, _layout.bodyTop + 116);
     _display->print("今日安排");
 
     const bool fallback = state.taskCount > 4;
     if (fallback) {
-        _display->setCursor(kPadding, kBodyTop + 156);
+        _display->setCursor(_layout.padding, _layout.bodyTop + 168);
         _display->printf("今日共 %u 项任务", state.summary.totalTasks);
-        _display->setCursor(kPadding, kBodyTop + 194);
+        _display->setCursor(_layout.padding, _layout.bodyTop + 206);
         _display->printf("已完成 %u 项", state.summary.completedTasks);
-        _display->setCursor(kPadding, kBodyTop + 232);
+        _display->setCursor(_layout.padding, _layout.bodyTop + 244);
         _display->printf("累计积分 %u", state.summary.totalPoints);
     } else {
         for (size_t index = 0; index < state.taskCount; ++index) {
-            const int y = kBodyTop + 146 + (int)index * 42;
-            _display->drawRect(kPadding, y, 16, 16, TFT_BLACK);
+            const int y = _layout.bodyTop + 154 + (int)index * 48;
+            _display->drawRect(_layout.padding, y, 16, 16, TFT_BLACK);
             if (state.tasks[index].status == TaskStatus::Done) {
-                _display->fillRect(kPadding + 2, y + 2, 12, 12, TFT_BLACK);
+                _display->fillRect(_layout.padding + 2, y + 2, 12, 12, TFT_BLACK);
             }
-            _display->setCursor(kPadding + 28, y - 2);
+            _display->setCursor(_layout.padding + 28, y - 2);
             _display->printf("%s", state.tasks[index].title);
         }
     }
 
-    drawNotionLineArt(_width - 236, kBodyTop + 110, 184, 168);
+    drawNotionLineArt(_width - 210, _layout.bodyTop + 336, 158, 148);
 }
 
 void PaperS3EDCRenderer::drawSettingsPage(const AppState& state) {
-    _display->setCursor(kPadding, kBodyTop);
+    _display->setCursor(_layout.padding, _layout.bodyTop);
     _display->print("设备配置");
-    _display->setCursor(kPadding, kBodyTop + 28);
+    _display->setCursor(_layout.padding, _layout.bodyTop + 28);
     _display->printf("网络：%s", state.config.wifiConfigured ? state.config.ssid : "未配置");
-    _display->setCursor(kPadding, kBodyTop + 54);
+    _display->setCursor(_layout.padding, _layout.bodyTop + 54);
     _display->printf("同步：%s", state.config.lastSyncLabel);
 
     for (int index = 0; index < 3; ++index) {
-        const int y = kBodyTop + 100 + index * 58;
+        const int y = _layout.settingsRowRect(index).y;
         const bool active = (index == state.focusedSettingsIndex);
-        _display->drawRect(kPadding, y, _width - kPadding * 2, 42, TFT_BLACK);
+        _display->drawRect(_layout.padding, y, _width - _layout.padding * 2, 42, TFT_BLACK);
         if (active) {
-            _display->fillRect(kPadding + 1, y + 1, _width - kPadding * 2 - 2, 40, TFT_BLACK);
+            _display->fillRect(_layout.padding + 1, y + 1, _width - _layout.padding * 2 - 2, 40, TFT_BLACK);
             _display->setTextColor(TFT_WHITE, TFT_BLACK);
         }
-        _display->setCursor(kPadding + 14, y + 12);
+        _display->setCursor(_layout.padding + 14, y + 12);
         _display->printf("%s", kSettingsLabels[index]);
         _display->setTextColor(TFT_BLACK, TFT_WHITE);
     }
 }
 
 void PaperS3EDCRenderer::drawWifiListPage(const AppState& state) {
-    _display->setCursor(kPadding, kBodyTop);
+    _display->setCursor(_layout.padding, _layout.bodyTop);
     _display->print("选择一个网络");
     const size_t count = std::max<size_t>(state.wifiNetworkCount, 1);
     for (size_t index = 0; index < count && index < 6; ++index) {
-        const int y = kBodyTop + 42 + (int)index * 52;
+        const int y = _layout.wifiRowRect((int)index).y;
         const bool active = ((int)index == state.focusedWifiIndex);
-        _display->drawRect(kPadding, y, _width - kPadding * 2, 40, TFT_BLACK);
+        _display->drawRect(_layout.padding, y, _width - _layout.padding * 2, 40, TFT_BLACK);
         if (active) {
-            _display->fillRect(kPadding + 1, y + 1, _width - kPadding * 2 - 2, 38, TFT_BLACK);
+            _display->fillRect(_layout.padding + 1, y + 1, _width - _layout.padding * 2 - 2, 38, TFT_BLACK);
             _display->setTextColor(TFT_WHITE, TFT_BLACK);
         }
-        _display->setCursor(kPadding + 12, y + 11);
+        _display->setCursor(_layout.padding + 12, y + 11);
         if (state.wifiNetworkCount == 0) {
             _display->print("重新扫描中…");
         } else {
             _display->printf("%s", state.wifiNetworks[index].ssid);
-            _display->setCursor(_width - 120, y + 11);
+            _display->setCursor(_width - 92, y + 11);
             _display->printf("%ddBm", state.wifiNetworks[index].rssi);
         }
         _display->setTextColor(TFT_BLACK, TFT_WHITE);
@@ -358,16 +351,16 @@ void PaperS3EDCRenderer::drawWifiListPage(const AppState& state) {
 }
 
 void PaperS3EDCRenderer::drawWifiPasswordPage(const AppState& state) {
-    _display->setCursor(kPadding, kBodyTop);
+    _display->setCursor(_layout.padding, _layout.bodyTop);
     _display->printf("网络：%s", state.config.ssid[0] ? state.config.ssid : "未选择");
-    _display->drawRect(kPadding, kBodyTop + 36, _width - kPadding * 2, 44, TFT_BLACK);
-    _display->setCursor(kPadding + 12, kBodyTop + 50);
+    _display->drawRect(_layout.padding, _layout.bodyTop + 42, _width - _layout.padding * 2, 44, TFT_BLACK);
+    _display->setCursor(_layout.padding + 12, _layout.bodyTop + 56);
     if (state.passwordBuffer[0]) {
         _display->printf("%s", state.passwordBuffer);
     } else {
         _display->print("请输入密码");
     }
-    drawKeyboardGrid(state, kPadding, kBodyTop + 108, 72, 42, 8);
+    drawKeyboardGrid(state, _layout.padding, _layout.keyboardTop, _layout.keyboardKeyW, _layout.keyboardKeyH, _layout.keyboardGap);
 }
 
 void PaperS3EDCRenderer::drawSyncStatusPage(const AppState& state) {
@@ -404,7 +397,7 @@ void PaperS3EDCRenderer::drawKeyboardGrid(const AppState& state, int x, int y, i
         for (int col = 0; col < kKeyboardCols; ++col) {
             const int keyX = x + col * (keyW + gap);
             const int keyY = y + row * (keyH + gap);
-            if (keyX + keyW > _width - kPadding + keyW) {
+            if (keyX + keyW > _width - _layout.padding) {
                 continue;
             }
             _display->drawRect(keyX, keyY, keyW, keyH, TFT_BLACK);
@@ -415,10 +408,10 @@ void PaperS3EDCRenderer::drawKeyboardGrid(const AppState& state, int x, int y, i
 }
 
 void PaperS3EDCRenderer::drawFallbackBodyMessage(const char* title, const char* detail) {
-    _display->drawRect(kPadding, kBodyTop, _width - kPadding * 2, 180, TFT_BLACK);
-    _display->setCursor(kPadding + 18, kBodyTop + 26);
+    _display->drawRect(_layout.padding, _layout.bodyTop, _width - _layout.padding * 2, 180, TFT_BLACK);
+    _display->setCursor(_layout.padding + 18, _layout.bodyTop + 26);
     _display->printf("%s", title);
-    _display->setCursor(kPadding + 18, kBodyTop + 72);
+    _display->setCursor(_layout.padding + 18, _layout.bodyTop + 72);
     _display->printf("%s", detail);
 }
 

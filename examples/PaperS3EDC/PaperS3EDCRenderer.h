@@ -3,6 +3,7 @@
 #include <M5Unified.h>
 
 #include "PaperS3EDCFontManager.h"
+#include "PaperS3EDCLayout.h"
 #include "PaperS3EDCModel.h"
 
 namespace papers3edc {
@@ -37,6 +38,7 @@ private:
     PaperS3EDCFontManager* _fonts = nullptr;
     int _width = 0;
     int _height = 0;
+    LayoutMetrics _layout{};
 };
 
 }  // namespace papers3edc
