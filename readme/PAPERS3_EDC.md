@@ -4,6 +4,8 @@
 
 Build a local-first child-focused EDC task device on M5Stack PaperS3. The current MVP focuses on a task-first daily screen, completion confirmation, progress summary, a read-only message inbox, device settings, Wi‑Fi setup, and a sync-ready local data model.
 
+The current PaperS3 device is read-only for messages: it only polls, caches, and displays relay-delivered content. Message creation, reply, and ack actions stay outside the device.
+
 ## Files
 
 - App entry: `examples/PaperS3EDC/PaperS3EDC.cpp`
@@ -50,13 +52,31 @@ pio device monitor -p /dev/cu.usbmodem2101 -b 115200
 - `Wi‑Fi 列表`：扫描并选择网络
 - `密码输入`：设备端矩形键盘输入
 
+## Message relay flow
+
+- Device side keeps a local message cache, cursor, and polling configuration in `LittleFS`
+- `PaperS3EDCSyncService` exposes a message pull path that looks like `GET /messages?device_id=<id>&cursor=<cursor>`
+- A relay service sits between DingTalk sources and the PaperS3 device
+- The relay normalizes incoming DingTalk content into a compact read-only message payload
+- The device merges new relay messages into local cache and updates the cursor after each successful poll
+
+## Polling defaults
+
+- Charging default: `2` seconds
+- Battery default: `10` seconds
+- The device chooses the active interval from current charging state
+- Auto polling pauses while the `Wi‑Fi` password page is open
+- Settings page allows adjusting both intervals directly on device
+
 ## Local-first behavior
 
 - Fake tasks are seeded on first boot
 - If `LittleFS` contains saved state, task state and points are restored
+- If `LittleFS` contains saved messages, cursor, and polling settings, they are restored on boot
 - Completed tasks write pending sync events locally
-- Manual sync first pushes pending completion events over serial, then pulls a fake "today tasks" snapshot
+- Manual sync first pushes pending completion events, then pulls a fake "today tasks" snapshot and message relay payload
 - Pull sync keeps local completed tasks as the winning state so offline completion is not rolled back by a later refresh
+- Timed background polling refreshes the message inbox on the configured cadence
 
 ## Stored files
 
@@ -67,7 +87,7 @@ The current MVP stores simple text files in `LittleFS`:
 
 ## Current limitations
 
-- No real cloud API yet
+- Relay polling still uses a fake in-firmware payload instead of a real cloud API
 - No mini program implementation yet
 - Wi‑Fi keyboard is functional but still minimal
 - Message inbox and contribution view are MVP versions intended for later visual polish
