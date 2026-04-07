@@ -21,10 +21,13 @@ private:
     void drawStatusBar(const AppState& state);
     void drawBottomTabs(const AppState& state);
     void drawTaskMarker(int x, int y, int w, int h, TaskStatus status, bool selected);
+    void drawUiText(const char* text, int x, int y, int width, int height, bool wrap = false);
+    void drawUiTextCentered(const char* text, int x, int y, int width, int height);
     void drawTodayPage(const AppState& state);
     void drawConfirmPage(const AppState& state);
     void drawProgressPage(const AppState& state);
-    void drawScreensaverPage(const AppState& state);
+    void drawMessagesPage(const AppState& state);
+    void drawMessageDetailPage(const AppState& state);
     void drawSettingsPage(const AppState& state);
     void drawWifiListPage(const AppState& state);
     void drawWifiPasswordPage(const AppState& state);

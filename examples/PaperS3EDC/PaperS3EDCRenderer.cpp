@@ -11,8 +11,13 @@ constexpr int kSectionGap = 16;
 constexpr int kTitleLineHeight = 38;
 constexpr int kKeyboardRows = 4;
 constexpr int kKeyboardCols = 10;
-constexpr const char* kTabLabels[] = {"今日", "成长", "屏保", "配置"};
-constexpr const char* kSettingsLabels[] = {"Wi‑Fi 配置", "手动同步", "返回今日"};
+constexpr int kMessageCardHeight = 82;
+constexpr int kMessageCardGap = 12;
+constexpr int kMessageDetailBodyTop = 140;
+constexpr int kMessageDetailFooterHeight = 44;
+constexpr int kMessageScrollStep = 84;
+constexpr const char* kTabLabels[] = {"今日", "成长", "消息", "配置"};
+constexpr int kSettingsRowCount = 5;
 constexpr const char* kWeekdayCn[] = {"星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"};
 
 const char* pageTitle(AppPage page) {
@@ -20,7 +25,8 @@ const char* pageTitle(AppPage page) {
         case AppPage::Today: return "今日安排";
         case AppPage::Confirm: return "确认完成";
         case AppPage::Progress: return "成长进度";
-        case AppPage::Screensaver: return "今日纸面";
+        case AppPage::Messages: return "消息收件箱";
+        case AppPage::MessageDetail: return "消息详情";
         case AppPage::Settings: return "设备配置";
         case AppPage::WifiList: return "选择网络";
         case AppPage::WifiPassword: return "输入密码";
@@ -82,6 +88,28 @@ void PaperS3EDCRenderer::displayFrame() {
     _display->display();
 }
 
+void PaperS3EDCRenderer::drawUiText(const char* text, int x, int y, int width, int height, bool wrap) {
+    if (_fonts && _fonts->isReady()) {
+        _fonts->drawText(text, x, y, width, height, wrap);
+        return;
+    }
+
+    _display->setFont(&fonts::Font2);
+    _display->setCursor(x, y + 14);
+    _display->print(text);
+}
+
+void PaperS3EDCRenderer::drawUiTextCentered(const char* text, int x, int y, int width, int height) {
+    if (_fonts && _fonts->isReady()) {
+        _fonts->drawText(text, x + 6, y + 6, width - 12, height - 12, false);
+        return;
+    }
+
+    _display->setFont(&fonts::Font2);
+    _display->setCursor(x + (width / 2) - 14, y + 12);
+    _display->print(text);
+}
+
 void PaperS3EDCRenderer::render(const AppState& state) {
     _display->fillScreen(TFT_WHITE);
     drawStatusBar(state);
@@ -89,7 +117,8 @@ void PaperS3EDCRenderer::render(const AppState& state) {
         case AppPage::Today: drawTodayPage(state); break;
         case AppPage::Confirm: drawConfirmPage(state); break;
         case AppPage::Progress: drawProgressPage(state); break;
-        case AppPage::Screensaver: drawScreensaverPage(state); break;
+        case AppPage::Messages: drawMessagesPage(state); break;
+        case AppPage::MessageDetail: drawMessageDetailPage(state); break;
         case AppPage::Settings: drawSettingsPage(state); break;
         case AppPage::WifiList: drawWifiListPage(state); break;
         case AppPage::WifiPassword: drawWifiPasswordPage(state); break;
@@ -102,16 +131,14 @@ void PaperS3EDCRenderer::render(const AppState& state) {
 void PaperS3EDCRenderer::drawStatusBar(const AppState& state) {
     _display->fillRect(0, 0, _width, _layout.statusHeight, TFT_WHITE);
     _display->drawLine(0, _layout.statusHeight - 1, _width, _layout.statusHeight - 1, TFT_BLACK);
-    _display->setFont(&fonts::Font2);
-    _display->setCursor(_layout.padding, 10);
-    _display->printf("%s", pageTitle(state.currentPage));
+    drawUiText(pageTitle(state.currentPage), _layout.padding, 8, 188, 28, false);
 
     drawBatteryBar(_width - 132, 10, 42, 18, state.summary.batteryPercent, state.summary.charging);
 
+    _display->setFont(&fonts::Font2);
     _display->setCursor(_width - 82, 12);
     _display->printf("%u/%u", state.summary.completedTasks, state.summary.totalTasks);
-    _display->setCursor(_width - 82, 30);
-    _display->printf("%s", syncStateName(state.syncState));
+    drawUiText(syncStateName(state.syncState), _width - 82, 28, 72, 20, false);
 }
 
 void PaperS3EDCRenderer::drawBottomTabs(const AppState& state) {
@@ -122,7 +149,7 @@ void PaperS3EDCRenderer::drawBottomTabs(const AppState& state) {
         const int x = _layout.footerButtonRect(index).x;
         const bool active = ((index == 0 && state.currentPage == AppPage::Today)
                           || (index == 1 && state.currentPage == AppPage::Progress)
-                          || (index == 2 && state.currentPage == AppPage::Screensaver)
+                          || (index == 2 && (state.currentPage == AppPage::Messages || state.currentPage == AppPage::MessageDetail))
                           || (index == 3 && (state.currentPage == AppPage::Settings || state.currentPage == AppPage::WifiList || state.currentPage == AppPage::WifiPassword || state.currentPage == AppPage::SyncStatus)));
         _display->drawRect(x, y + 10, buttonWidth, _layout.footerButtonHeight, TFT_BLACK);
         if (active) {
@@ -131,14 +158,11 @@ void PaperS3EDCRenderer::drawBottomTabs(const AppState& state) {
         } else {
             _display->setTextColor(TFT_BLACK, TFT_WHITE);
         }
-        _display->setCursor(x + buttonWidth / 2 - 14, y + 18);
-        _display->print(kTabLabels[index]);
+        drawUiTextCentered(kTabLabels[index], x, y + 10, buttonWidth, _layout.footerButtonHeight);
     }
     _display->setTextColor(TFT_BLACK, TFT_WHITE);
-    _display->setCursor(_layout.padding, y + 50);
-    _display->printf("%s", state.statusLine);
-    _display->setCursor(_width / 2, y + 48);
-    _display->printf("%s", state.statusDetail);
+    drawUiText(state.statusLine, _layout.padding, y + 46, (_width / 2) - _layout.padding - 8, 20, false);
+    drawUiText(state.statusDetail, _width / 2, y + 46, (_width / 2) - _layout.padding, 20, false);
 }
 
 void PaperS3EDCRenderer::drawTaskMarker(int x, int y, int w, int h, TaskStatus status, bool selected) {
@@ -157,9 +181,9 @@ void PaperS3EDCRenderer::drawTaskMarker(int x, int y, int w, int h, TaskStatus s
 }
 
 void PaperS3EDCRenderer::drawTodayPage(const AppState& state) {
-    _display->setFont(&fonts::Font2);
-    _display->setCursor(_layout.padding, _layout.bodyTop);
-    _display->printf("%s · %s", state.summary.dateTitle, state.summary.weekLabel);
+    char dateLine[64];
+    snprintf(dateLine, sizeof(dateLine), "%s %s", state.summary.dateTitle, state.summary.weekLabel);
+    drawUiText(dateLine, _layout.padding, _layout.bodyTop, _width - _layout.padding * 2, 24, false);
 
     if (_fonts && _fonts->isReady()) {
         _fonts->drawText("今天要完成的事", _layout.padding, _layout.bodyTop + 28, _width - _layout.padding * 2, 36, false);
@@ -172,14 +196,14 @@ void PaperS3EDCRenderer::drawTodayPage(const AppState& state) {
 
     if (fallback) {
         _display->drawRect(_layout.padding, listTop, _width - _layout.padding * 2, 164, TFT_BLACK);
-        _display->setCursor(_layout.padding + 16, listTop + 20);
-        _display->print("今日任务较多，已切换为总览模式");
-        _display->setCursor(_layout.padding + 16, listTop + 58);
-        _display->printf("共 %u 项", state.summary.totalTasks);
-        _display->setCursor(_layout.padding + 16, listTop + 90);
-        _display->printf("已完成 %u 项", state.summary.completedTasks);
-        _display->setCursor(_layout.padding + 16, listTop + 122);
-        _display->printf("今日积分 %u", state.summary.dayPoints);
+        char line[48];
+        drawUiText("今日任务较多，已切换为总览模式", _layout.padding + 16, listTop + 18, _width - _layout.padding * 2 - 32, 26, false);
+        snprintf(line, sizeof(line), "共 %u 项", state.summary.totalTasks);
+        drawUiText(line, _layout.padding + 16, listTop + 56, 120, 24, false);
+        snprintf(line, sizeof(line), "已完成 %u 项", state.summary.completedTasks);
+        drawUiText(line, _layout.padding + 16, listTop + 88, 160, 24, false);
+        snprintf(line, sizeof(line), "今日积分 %u", state.summary.dayPoints);
+        drawUiText(line, _layout.padding + 16, listTop + 120, 160, 24, false);
         return;
     }
 
@@ -209,36 +233,35 @@ void PaperS3EDCRenderer::drawConfirmPage(const AppState& state) {
     }
     const TaskItem& task = state.tasks[state.armedTaskIndex];
     _display->drawRect(_layout.padding, _layout.bodyTop, _width - _layout.padding * 2, _layout.confirmCardHeight, TFT_BLACK);
-    _display->setCursor(_layout.padding + 18, _layout.bodyTop + 20);
-    _display->print("确认完成以下任务");
+    drawUiText("确认完成以下任务", _layout.padding + 18, _layout.bodyTop + 18, _width - _layout.padding * 2 - 36, 26, false);
     if (_fonts && _fonts->isReady()) {
         _fonts->drawText(task.title, _layout.padding + 18, _layout.bodyTop + 58, _width - _layout.padding * 2 - 36, 110, true);
     }
-    _display->setCursor(_layout.padding + 18, _layout.bodyTop + 184);
-    _display->printf("完成后将获得 %u 积分", task.points);
+    char confirmLine[48];
+    snprintf(confirmLine, sizeof(confirmLine), "完成后将获得 %u 积分", task.points);
+    drawUiText(confirmLine, _layout.padding + 18, _layout.bodyTop + 182, _width - _layout.padding * 2 - 36, 24, false);
 
     const RectBox backRect = _layout.confirmBackRect();
     const RectBox doneRect = _layout.confirmDoneRect();
     _display->drawRect(backRect.x, backRect.y, backRect.w, backRect.h, TFT_BLACK);
-    _display->setCursor(backRect.x + backRect.w / 2 - 14, backRect.y + 12);
-    _display->print("返回");
+    drawUiTextCentered("返回", backRect.x, backRect.y, backRect.w, backRect.h);
     _display->fillRect(doneRect.x, doneRect.y, doneRect.w, doneRect.h, TFT_BLACK);
     _display->setTextColor(TFT_WHITE, TFT_BLACK);
-    _display->setCursor(doneRect.x + doneRect.w / 2 - 28, doneRect.y + 12);
-    _display->print("确认完成");
+    drawUiTextCentered("确认完成", doneRect.x, doneRect.y, doneRect.w, doneRect.h);
     _display->setTextColor(TFT_BLACK, TFT_WHITE);
 }
 
 void PaperS3EDCRenderer::drawProgressPage(const AppState& state) {
-    _display->setCursor(_layout.padding, _layout.bodyTop);
-    _display->printf("累计积分 %u", state.summary.totalPoints);
-    _display->setCursor(_layout.padding, _layout.bodyTop + 30);
-    _display->printf("连续 %u 天", state.summary.streakDays);
+    char line[48];
+    snprintf(line, sizeof(line), "累计积分 %u", state.summary.totalPoints);
+    drawUiText(line, _layout.padding, _layout.bodyTop, 200, 24, false);
+    snprintf(line, sizeof(line), "连续 %u 天", state.summary.streakDays);
+    drawUiText(line, _layout.padding, _layout.bodyTop + 30, 160, 24, false);
     _display->drawRect(_layout.padding, _layout.bodyTop + 74, _width - _layout.padding * 2, 120, TFT_BLACK);
-    _display->setCursor(_layout.padding + 14, _layout.bodyTop + 92);
-    _display->printf("今日完成 %u / %u", state.summary.completedTasks, state.summary.totalTasks);
-    _display->setCursor(_layout.padding + 14, _layout.bodyTop + 128);
-    _display->printf("今日新增积分 %u", state.summary.dayPoints);
+    snprintf(line, sizeof(line), "今日完成 %u / %u", state.summary.completedTasks, state.summary.totalTasks);
+    drawUiText(line, _layout.padding + 14, _layout.bodyTop + 90, 220, 24, false);
+    snprintf(line, sizeof(line), "今日新增积分 %u", state.summary.dayPoints);
+    drawUiText(line, _layout.padding + 14, _layout.bodyTop + 126, 220, 24, false);
 
     const int gridTop = _layout.bodyTop + 230;
     const int cellW = 24;
@@ -260,59 +283,82 @@ void PaperS3EDCRenderer::drawProgressPage(const AppState& state) {
         }
     }
 
-    _display->setCursor(_layout.padding, gridTop + 124);
-    _display->print("成长贡献图");
-    _display->setCursor(_layout.padding, gridTop + 152);
-    _display->print("浅灰=开始");
-    _display->setCursor(_layout.padding, gridTop + 180);
-    _display->print("深灰=全部完成");
+    drawUiText("成长贡献图", _layout.padding, gridTop + 122, 140, 24, false);
+    drawUiText("浅灰=开始", _layout.padding, gridTop + 150, 120, 24, false);
+    drawUiText("深灰=全部完成", _layout.padding, gridTop + 178, 160, 24, false);
 }
 
-void PaperS3EDCRenderer::drawScreensaverPage(const AppState& state) {
-    if (_fonts && _fonts->isReady()) {
-        _fonts->drawText(state.summary.dateTitle, _layout.padding, _layout.bodyTop, _width - _layout.padding * 2, 56, false);
-    } else {
-        _display->setCursor(_layout.padding, _layout.bodyTop);
-        _display->printf("%s", state.summary.dateTitle);
-    }
-    _display->setCursor(_layout.padding, _layout.bodyTop + 62);
-    _display->printf("%s", state.summary.weekLabel);
-    _display->drawLine(_layout.padding, _layout.bodyTop + 92, _width - _layout.padding, _layout.bodyTop + 92, TFT_BLACK);
-    _display->setCursor(_layout.padding, _layout.bodyTop + 116);
-    _display->print("今日安排");
+void PaperS3EDCRenderer::drawMessagesPage(const AppState& state) {
+    char line[96];
+    snprintf(line, sizeof(line), "本地缓存 %u 条", (unsigned)state.messageCount);
+    drawUiText(line, _layout.padding, _layout.bodyTop, 180, 24, false);
+    drawUiText("点击消息查看详情", _layout.padding, _layout.bodyTop + 28, 180, 24, false);
 
-    const bool fallback = state.taskCount > 4;
-    if (fallback) {
-        _display->setCursor(_layout.padding, _layout.bodyTop + 168);
-        _display->printf("今日共 %u 项任务", state.summary.totalTasks);
-        _display->setCursor(_layout.padding, _layout.bodyTop + 206);
-        _display->printf("已完成 %u 项", state.summary.completedTasks);
-        _display->setCursor(_layout.padding, _layout.bodyTop + 244);
-        _display->printf("累计积分 %u", state.summary.totalPoints);
-    } else {
-        for (size_t index = 0; index < state.taskCount; ++index) {
-            const int y = _layout.bodyTop + 154 + (int)index * 48;
-            _display->drawRect(_layout.padding, y, 16, 16, TFT_BLACK);
-            if (state.tasks[index].status == TaskStatus::Done) {
-                _display->fillRect(_layout.padding + 2, y + 2, 12, 12, TFT_BLACK);
-            }
-            _display->setCursor(_layout.padding + 28, y - 2);
-            _display->printf("%s", state.tasks[index].title);
+    if (state.messageCount == 0) {
+        drawFallbackBodyMessage("暂无消息", "等待下一次拉取");
+        return;
+    }
+
+    const int listTop = _layout.bodyTop + 62;
+    for (size_t index = 0; index < state.messageCount && index < 4; ++index) {
+        const int y = listTop + (int)index * (kMessageCardHeight + kMessageCardGap);
+        const bool selected = ((int)index == state.messagePage.selectedMessageIndex);
+        _display->drawRect(_layout.padding, y, _width - _layout.padding * 2, kMessageCardHeight, TFT_BLACK);
+        if (selected) {
+            _display->fillRect(_layout.padding + 1, y + 1, _width - _layout.padding * 2 - 2, kMessageCardHeight - 2, TFT_BLACK);
+            _display->setTextColor(TFT_WHITE, TFT_BLACK);
         }
+
+        const MessageItem& item = state.messages[index];
+        if (!item.read) {
+            drawUiText("未读", _layout.padding + 12, y + 8, 48, 20, false);
+        }
+        drawUiText(item.title, _layout.padding + 64, y + 8, _width - _layout.padding * 2 - 150, 22, false);
+        drawUiText(item.body, _layout.padding + 12, y + 34, _width - _layout.padding * 2 - 24, 20, false);
+        drawUiText(item.sent_at, _width - 108, y + 8, 80, 20, false);
+        drawUiText(item.source, _layout.padding + 12, y + 56, 120, 18, false);
+        _display->setTextColor(TFT_BLACK, TFT_WHITE);
+    }
+}
+
+void PaperS3EDCRenderer::drawMessageDetailPage(const AppState& state) {
+    if (state.messagePage.selectedMessageDetailIndex < 0
+        || state.messagePage.selectedMessageDetailIndex >= (int)state.messageCount) {
+        drawFallbackBodyMessage("没有选中消息", "返回消息页重新选择");
+        return;
     }
 
-    drawNotionLineArt(_width - 210, _layout.bodyTop + 336, 158, 148);
+    const MessageItem& item = state.messages[state.messagePage.selectedMessageDetailIndex];
+    _display->drawRect(_layout.padding, _layout.bodyTop, _width - _layout.padding * 2, 56, TFT_BLACK);
+    drawUiText(item.title, _layout.padding + 12, _layout.bodyTop + 8, _width - _layout.padding * 2 - 24, 20, false);
+    char metaLine[96];
+    snprintf(metaLine, sizeof(metaLine), "%s | %s", item.source, item.sent_at);
+    drawUiText(metaLine, _layout.padding + 12, _layout.bodyTop + 30, _width - _layout.padding * 2 - 24, 18, false);
+
+    const int bodyHeight = _layout.bodyBottom - kMessageDetailBodyTop - kMessageDetailFooterHeight - 8;
+    _display->drawRect(_layout.padding, kMessageDetailBodyTop, _width - _layout.padding * 2, bodyHeight, TFT_BLACK);
+    drawUiText(item.body,
+               _layout.padding + 12,
+               kMessageDetailBodyTop + 10 - state.messagePage.messageScrollOffset,
+               _width - _layout.padding * 2 - 24,
+               bodyHeight + state.messagePage.messageScrollOffset + 80,
+               true);
+
+    const int footerY = _layout.bodyBottom - kMessageDetailFooterHeight;
+    _display->drawRect(_layout.padding, footerY, _width - _layout.padding * 2, kMessageDetailFooterHeight, TFT_BLACK);
+    drawUiText("返回", _layout.padding + 14, footerY + 10, 48, 20, false);
+    drawUiText("上滑 / 下滑滚动消息详情", _layout.padding + 74, footerY + 10, _width - _layout.padding * 2 - 88, 20, false);
 }
 
 void PaperS3EDCRenderer::drawSettingsPage(const AppState& state) {
-    _display->setCursor(_layout.padding, _layout.bodyTop);
-    _display->print("设备配置");
-    _display->setCursor(_layout.padding, _layout.bodyTop + 28);
-    _display->printf("网络：%s", state.config.wifiConfigured ? state.config.ssid : "未配置");
-    _display->setCursor(_layout.padding, _layout.bodyTop + 54);
-    _display->printf("同步：%s", state.config.lastSyncLabel);
+    char line[96];
+    drawUiText("设备配置", _layout.padding, _layout.bodyTop, 120, 24, false);
+    snprintf(line, sizeof(line), "网络：%s", state.config.wifiConfigured ? state.config.ssid : "未配置");
+    drawUiText(line, _layout.padding, _layout.bodyTop + 28, _width - _layout.padding * 2, 24, false);
+    snprintf(line, sizeof(line), "同步：%s", state.config.lastSyncLabel);
+    drawUiText(line, _layout.padding, _layout.bodyTop + 54, _width - _layout.padding * 2, 24, false);
 
-    for (int index = 0; index < 3; ++index) {
+    for (int index = 0; index < kSettingsRowCount; ++index) {
         const int y = _layout.settingsRowRect(index).y;
         const bool active = (index == state.focusedSettingsIndex);
         _display->drawRect(_layout.padding, y, _width - _layout.padding * 2, 42, TFT_BLACK);
@@ -320,15 +366,24 @@ void PaperS3EDCRenderer::drawSettingsPage(const AppState& state) {
             _display->fillRect(_layout.padding + 1, y + 1, _width - _layout.padding * 2 - 2, 40, TFT_BLACK);
             _display->setTextColor(TFT_WHITE, TFT_BLACK);
         }
-        _display->setCursor(_layout.padding + 14, y + 12);
-        _display->printf("%s", kSettingsLabels[index]);
+        if (index == 0) {
+            snprintf(line, sizeof(line), "插电拉取间隔  %u 秒", state.pollIntervalChargingSec);
+        } else if (index == 1) {
+            snprintf(line, sizeof(line), "电池拉取间隔  %u 秒", state.pollIntervalBatterySec);
+        } else if (index == 2) {
+            snprintf(line, sizeof(line), "Wi‑Fi 配置");
+        } else if (index == 3) {
+            snprintf(line, sizeof(line), "手动同步");
+        } else {
+            snprintf(line, sizeof(line), "返回今日");
+        }
+        drawUiText(line, _layout.padding + 14, y + 8, _width - _layout.padding * 2 - 28, 24, false);
         _display->setTextColor(TFT_BLACK, TFT_WHITE);
     }
 }
 
 void PaperS3EDCRenderer::drawWifiListPage(const AppState& state) {
-    _display->setCursor(_layout.padding, _layout.bodyTop);
-    _display->print("选择一个网络");
+    drawUiText("选择一个网络", _layout.padding, _layout.bodyTop, 140, 24, false);
     const size_t count = std::max<size_t>(state.wifiNetworkCount, 1);
     for (size_t index = 0; index < count && index < 6; ++index) {
         const int y = _layout.wifiRowRect((int)index).y;
@@ -340,9 +395,9 @@ void PaperS3EDCRenderer::drawWifiListPage(const AppState& state) {
         }
         _display->setCursor(_layout.padding + 12, y + 11);
         if (state.wifiNetworkCount == 0) {
-            _display->print("重新扫描中…");
+            drawUiText("重新扫描中…", _layout.padding + 12, y + 8, 180, 24, false);
         } else {
-            _display->printf("%s", state.wifiNetworks[index].ssid);
+            drawUiText(state.wifiNetworks[index].ssid, _layout.padding + 12, y + 8, _width - _layout.padding * 2 - 110, 24, false);
             _display->setCursor(_width - 92, y + 11);
             _display->printf("%ddBm", state.wifiNetworks[index].rssi);
         }
@@ -351,14 +406,14 @@ void PaperS3EDCRenderer::drawWifiListPage(const AppState& state) {
 }
 
 void PaperS3EDCRenderer::drawWifiPasswordPage(const AppState& state) {
-    _display->setCursor(_layout.padding, _layout.bodyTop);
-    _display->printf("网络：%s", state.config.ssid[0] ? state.config.ssid : "未选择");
+    char line[96];
+    snprintf(line, sizeof(line), "网络：%s", state.config.ssid[0] ? state.config.ssid : "未选择");
+    drawUiText(line, _layout.padding, _layout.bodyTop, _width - _layout.padding * 2, 24, false);
     _display->drawRect(_layout.padding, _layout.bodyTop + 42, _width - _layout.padding * 2, 44, TFT_BLACK);
-    _display->setCursor(_layout.padding + 12, _layout.bodyTop + 56);
     if (state.passwordBuffer[0]) {
-        _display->printf("%s", state.passwordBuffer);
+        drawUiText(state.passwordBuffer, _layout.padding + 12, _layout.bodyTop + 52, _width - _layout.padding * 2 - 24, 24, false);
     } else {
-        _display->print("请输入密码");
+        drawUiText("请输入密码", _layout.padding + 12, _layout.bodyTop + 52, 160, 24, false);
     }
     drawKeyboardGrid(state, _layout.padding, _layout.keyboardTop, _layout.keyboardKeyW, _layout.keyboardKeyH, _layout.keyboardGap);
 }

@@ -6,11 +6,16 @@
 namespace papers3edc {
 
 constexpr size_t kMaxTasks = 12;
+constexpr size_t kMaxMessages = 8;
 constexpr size_t kMaxWifiNetworks = 10;
 constexpr size_t kMaxPendingEvents = 24;
 constexpr size_t kContributionCellCount = 28;
 
 constexpr size_t kTaskTitleCapacity = 96;
+constexpr size_t kMessageTitleCapacity = 64;
+constexpr size_t kMessageBodyCapacity = 384;
+constexpr size_t kMessageMetaCapacity = 32;
+constexpr size_t kMessageCursorCapacity = 48;
 constexpr size_t kStatusTextCapacity = 64;
 constexpr size_t kSsidCapacity = 33;
 constexpr size_t kPasswordCapacity = 65;
@@ -19,7 +24,8 @@ enum class AppPage : uint8_t {
     Today = 0,
     Confirm,
     Progress,
-    Screensaver,
+    Messages,
+    MessageDetail,
     Settings,
     WifiList,
     WifiPassword,
@@ -46,6 +52,21 @@ struct TaskItem {
     uint16_t points = 0;
     TaskStatus status = TaskStatus::Pending;
     bool dirty = false;
+};
+
+struct MessageItem {
+    char message_id[20] = {0};
+    char title[kMessageTitleCapacity] = {0};
+    char body[kMessageBodyCapacity] = {0};
+    char sent_at[kMessageMetaCapacity] = {0};
+    char source[kMessageMetaCapacity] = {0};
+    bool read = false;
+};
+
+struct MessagePageState {
+    int selectedMessageIndex = 0;
+    int selectedMessageDetailIndex = -1;
+    int messageScrollOffset = 0;
 };
 
 struct ContributionCell {
@@ -91,7 +112,10 @@ struct AppState {
     int focusedSettingsIndex = 0;
     int focusedWifiIndex = 0;
     size_t taskCount = 0;
+    size_t messageCount = 0;
     TaskItem tasks[kMaxTasks]{};
+    MessageItem messages[kMaxMessages]{};
+    MessagePageState messagePage{};
     DailySummary summary{};
     DeviceConfig config{};
     SyncState syncState = SyncState::Idle;
@@ -103,6 +127,9 @@ struct AppState {
     WifiNetwork wifiNetworks[kMaxWifiNetworks]{};
     char passwordBuffer[kPasswordCapacity] = {0};
     bool passwordUppercase = false;
+    uint32_t pollIntervalChargingSec = 2;  // 插电拉取间隔
+    uint32_t pollIntervalBatterySec = 10;  // 电池拉取间隔
+    char lastMessageCursor[kMessageCursorCapacity] = {0};
     size_t pendingEventCount = 0;
     PendingEvent pendingEvents[kMaxPendingEvents]{};
     ContributionCell contribution[kContributionCellCount]{};

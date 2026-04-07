@@ -91,6 +91,7 @@ bool PaperS3EDCStorage::loadState(AppState& state) {
     if (!file) return false;
 
     state.taskCount = 0;
+    state.messageCount = 0;
     state.pendingEventCount = 0;
     while (file.available()) {
         String line = file.readStringUntil('\n');
@@ -100,6 +101,18 @@ bool PaperS3EDCStorage::loadState(AppState& state) {
             state.summary.totalPoints = line.substring(12).toInt();
         } else if (line.startsWith("streakDays=")) {
             state.summary.streakDays = line.substring(11).toInt();
+        } else if (line.startsWith("pollIntervalChargingSec=")) {
+            state.pollIntervalChargingSec = line.substring(24).toInt();
+        } else if (line.startsWith("pollIntervalBatterySec=")) {
+            state.pollIntervalBatterySec = line.substring(22).toInt();
+        } else if (line.startsWith("selectedMessageIndex=")) {
+            state.messagePage.selectedMessageIndex = line.substring(21).toInt();
+        } else if (line.startsWith("selectedMessageDetailIndex=")) {
+            state.messagePage.selectedMessageDetailIndex = line.substring(27).toInt();
+        } else if (line.startsWith("messageScrollOffset=")) {
+            state.messagePage.messageScrollOffset = line.substring(20).toInt();
+        } else if (line.startsWith("cursor=")) {
+            copyText(state.lastMessageCursor, sizeof(state.lastMessageCursor), line.substring(7).c_str());
         } else if (line.startsWith("task|")) {
             if (state.taskCount >= kMaxTasks) continue;
             TaskItem& task = state.tasks[state.taskCount++];
@@ -108,6 +121,15 @@ bool PaperS3EDCStorage::loadState(AppState& state) {
             task.status = static_cast<TaskStatus>(fieldAt(line, 3).toInt());
             task.dirty = fieldAt(line, 4).toInt() == 1;
             unescapeText(task.title, sizeof(task.title), fieldAt(line, 5));
+        } else if (line.startsWith("message|")) {
+            if (state.messageCount >= kMaxMessages) continue;
+            MessageItem& message = state.messages[state.messageCount++];
+            unescapeText(message.message_id, sizeof(message.message_id), fieldAt(line, 1));
+            unescapeText(message.title, sizeof(message.title), fieldAt(line, 2));
+            unescapeText(message.body, sizeof(message.body), fieldAt(line, 3));
+            unescapeText(message.sent_at, sizeof(message.sent_at), fieldAt(line, 4));
+            unescapeText(message.source, sizeof(message.source), fieldAt(line, 5));
+            message.read = fieldAt(line, 6).toInt() == 1;
         } else if (line.startsWith("pending|")) {
             if (state.pendingEventCount >= kMaxPendingEvents) continue;
             PendingEvent& event = state.pendingEvents[state.pendingEventCount++];
@@ -137,6 +159,12 @@ bool PaperS3EDCStorage::saveState(const AppState& state) {
     file.println("EDC_STATE_V1");
     file.printf("totalPoints=%u\n", state.summary.totalPoints);
     file.printf("streakDays=%u\n", state.summary.streakDays);
+    file.printf("pollIntervalChargingSec=%u\n", state.pollIntervalChargingSec);
+    file.printf("pollIntervalBatterySec=%u\n", state.pollIntervalBatterySec);
+    file.printf("selectedMessageIndex=%d\n", state.messagePage.selectedMessageIndex);
+    file.printf("selectedMessageDetailIndex=%d\n", state.messagePage.selectedMessageDetailIndex);
+    file.printf("messageScrollOffset=%d\n", state.messagePage.messageScrollOffset);
+    file.printf("cursor=%s\n", state.lastMessageCursor);
     for (size_t index = 0; index < state.taskCount; ++index) {
         const TaskItem& task = state.tasks[index];
         file.printf("task|%u|%u|%u|%u|%s\n",
@@ -145,6 +173,16 @@ bool PaperS3EDCStorage::saveState(const AppState& state) {
                     static_cast<unsigned>(task.status),
                     task.dirty ? 1 : 0,
                     escapeText(task.title).c_str());
+    }
+    for (size_t index = 0; index < state.messageCount; ++index) {
+        const MessageItem& message = state.messages[index];
+        file.printf("message|%s|%s|%s|%s|%s|%u\n",
+                    escapeText(message.message_id).c_str(),
+                    escapeText(message.title).c_str(),
+                    escapeText(message.body).c_str(),
+                    escapeText(message.sent_at).c_str(),
+                    escapeText(message.source).c_str(),
+                    message.read ? 1 : 0);
     }
     for (size_t index = 0; index < state.pendingEventCount; ++index) {
         const PendingEvent& event = state.pendingEvents[index];
