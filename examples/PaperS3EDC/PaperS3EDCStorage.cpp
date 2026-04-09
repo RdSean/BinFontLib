@@ -65,6 +65,11 @@ bool PaperS3EDCStorage::loadConfig(DeviceConfig& config) {
             config.wifiConfigured = line.substring(15).toInt() == 1;
         } else if (line.startsWith("lastSync=")) {
             copyText(config.lastSyncLabel, sizeof(config.lastSyncLabel), line.substring(9).c_str());
+        } else if (line.startsWith("epdMode=")) {
+            const int value = line.substring(8).toInt();
+            if (value >= static_cast<int>(EpdRefreshMode::Text) && value <= static_cast<int>(EpdRefreshMode::Quality)) {
+                config.epdRefreshMode = static_cast<EpdRefreshMode>(value);
+            }
         }
     }
     file.close();
@@ -80,6 +85,7 @@ bool PaperS3EDCStorage::saveConfig(const DeviceConfig& config) {
     file.printf("password=%s\n", config.password);
     file.printf("wifiConfigured=%d\n", config.wifiConfigured ? 1 : 0);
     file.printf("lastSync=%s\n", config.lastSyncLabel);
+    file.printf("epdMode=%u\n", static_cast<unsigned>(config.epdRefreshMode));
     file.close();
     return true;
 }

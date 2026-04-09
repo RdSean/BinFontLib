@@ -25,6 +25,25 @@ constexpr uint32_t kMaxPollIntervalSec = 30;
 constexpr uint32_t kPollIntervalStepSec = 2;
 constexpr const char* kRelayDeviceId = "papers3-demo";
 
+EpdRefreshMode cycleEpdMode(EpdRefreshMode current, int delta) {
+    constexpr int kModeCount = 4;
+    int next = static_cast<int>(current) + delta;
+    while (next < 0) next += kModeCount;
+    while (next >= kModeCount) next -= kModeCount;
+    return static_cast<EpdRefreshMode>(next);
+}
+
+const char* epdModeLabel(EpdRefreshMode mode) {
+    switch (mode) {
+        case EpdRefreshMode::Fast: return "Fast";
+        case EpdRefreshMode::Fastest: return "Fastest";
+        case EpdRefreshMode::Quality: return "Quality";
+        case EpdRefreshMode::Text:
+        default:
+            return "Text";
+    }
+}
+
 class PaperS3EDCController {
 public:
     PaperS3EDCController()
@@ -39,6 +58,7 @@ private:
     void refreshDateAndPower();
     void refreshCounts();
     void setStatus(const char* line, const char* detail);
+    void renderCurrentPage(RefreshMode mode);
     void showPage(AppPage page);
     void handleTouch(int x, int y);
     void handleFooterTouch(int x, int y);
@@ -80,6 +100,20 @@ void PaperS3EDCController::setStatus(const char* line, const char* detail) {
     copyText(_state.statusLine, sizeof(_state.statusLine), line);
     copyText(_state.statusDetail, sizeof(_state.statusDetail), detail);
     Serial.printf("[status] %s | %s\n", _state.statusLine, _state.statusDetail);
+}
+
+void PaperS3EDCController::renderCurrentPage(RefreshMode mode) {
+    RefreshMode effectiveMode = mode;
+    if (effectiveMode == RefreshMode::Full) {
+        _state.partialRefreshCount = 0;
+    } else {
+        ++_state.partialRefreshCount;
+        if (_state.partialRefreshCount >= kPartialRefreshThreshold) {
+            effectiveMode = RefreshMode::Full;
+            _state.partialRefreshCount = 0;
+        }
+    }
+    _renderer.render(_state, effectiveMode);
 }
 
 void PaperS3EDCController::mountStorage() {
@@ -294,7 +328,7 @@ void PaperS3EDCController::maybePollMessages(uint32_t now) {
         persistState();
         persistConfig();
         if (_state.currentPage == AppPage::Messages) {
-            _renderer.render(_state);
+            renderCurrentPage(RefreshMode::MessageAppend);
         }
     }
     _lastMessagePollMs = now;
@@ -352,7 +386,7 @@ void PaperS3EDCController::showPage(AppPage page) {
     if (_state.currentPage == AppPage::Messages) {
         _state.messagePage.currentPageIndex = _renderer.clampMessagePageIndex(_state, _state.messagePage.currentPageIndex);
     }
-    _renderer.render(_state);
+    renderCurrentPage(RefreshMode::Full);
 }
 
 void PaperS3EDCController::handleFooterTouch(int x, int y) {
@@ -457,12 +491,12 @@ void PaperS3EDCController::handleTouch(int x, int y) {
             setStatus("消息", "下一页");
         }
         persistState();
-        showPage(AppPage::Messages);
+        renderCurrentPage(RefreshMode::MessagePage);
         return;
     }
 
     if (_state.currentPage == AppPage::Settings) {
-        for (int index = 0; index < 5; ++index) {
+        for (int index = 0; index < 6; ++index) {
             RectBox row = _layout.settingsRowRect(index);
             if (!row.contains(x, y)) {
                 continue;
@@ -479,9 +513,14 @@ void PaperS3EDCController::handleTouch(int x, int y) {
                 persistState();
                 showPage(AppPage::Settings);
             } else if (index == 2) {
+                _state.config.epdRefreshMode = cycleEpdMode(_state.config.epdRefreshMode, x < row.x + row.w / 2 ? -1 : 1);
+                setStatus("刷新模式", epdModeLabel(_state.config.epdRefreshMode));
+                persistConfig();
+                showPage(AppPage::Settings);
+            } else if (index == 3) {
                 scanWifiNetworks();
                 showPage(AppPage::WifiList);
-            } else if (index == 3) {
+            } else if (index == 4) {
                 runManualSync();
                 showPage(AppPage::SyncStatus);
             } else {

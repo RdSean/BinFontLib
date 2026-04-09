@@ -31,6 +31,8 @@ public:
 
     RenderStats drawText(const char* text, int x, int y, int width, int height, bool wrap = true);
     RenderStats drawCompactText(const char* text, int x, int y, int width, int height, bool wrap = true);
+    RenderStats drawTextToCanvas(M5Canvas& canvas, const char* text, int x, int y, int width, int height, bool wrap = true);
+    RenderStats drawCompactTextToCanvas(M5Canvas& canvas, const char* text, int x, int y, int width, int height, bool wrap = true);
     RenderStats drawPreviewText(size_t index, const char* text, int x, int y, int width, int height, bool wrap = true);
     int getFontHeight() const;
     int getLineHeight() const;

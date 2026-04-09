@@ -13,9 +13,12 @@ public:
     PaperS3EDCRenderer(lgfx::LGFXBase* display, PaperS3EDCFontManager* fonts);
 
     void begin();
-    void render(const AppState& state);
+    void render(const AppState& state, RefreshMode mode = RefreshMode::Full);
     int messagePageCount(const AppState& state) const;
     int clampMessagePageIndex(const AppState& state, int requestedPageIndex) const;
+    RectBox statusBarRegion() const;
+    RectBox messageViewportRegion() const;
+    RectBox footerRegion() const;
 
 private:
     struct MessageLayout {
@@ -32,8 +35,10 @@ private:
         int endDisplayIndex = 0;
     };
 
-    void applyEpdMode();
-    void displayFrame();
+    void applyEpdMode(EpdRefreshMode mode);
+    void displayFrame(EpdRefreshMode mode);
+    void displayRegion(const RectBox& region, EpdRefreshMode mode);
+    bool ensureMessageViewportCanvas();
     void drawStatusBar(const AppState& state);
     void drawBottomTabs(const AppState& state);
     void drawTaskMarker(int x, int y, int w, int h, TaskStatus status, bool selected);
@@ -44,6 +49,7 @@ private:
     void drawConfirmPage(const AppState& state);
     void drawProgressPage(const AppState& state);
     void drawMessagesPage(const AppState& state);
+    void drawMessagesPageToCanvas(const AppState& state, M5Canvas& canvas);
     void drawSettingsPage(const AppState& state);
     void drawWifiListPage(const AppState& state);
     void drawWifiPasswordPage(const AppState& state);
@@ -64,6 +70,7 @@ private:
 
     lgfx::LGFXBase* _display = nullptr;
     PaperS3EDCFontManager* _fonts = nullptr;
+    M5Canvas _messageViewportCanvas;
     int _width = 0;
     int _height = 0;
     LayoutMetrics _layout{};

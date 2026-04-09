@@ -139,6 +139,20 @@ RenderStats PaperS3EDCFontManager::drawCompactText(const char* text, int x, int 
     return _compactRenderer.drawText(text, x, y, width, height, wrap);
 }
 
+RenderStats PaperS3EDCFontManager::drawTextToCanvas(M5Canvas& canvas, const char* text, int x, int y, int width, int height, bool wrap) {
+    if (!_ready) {
+        return RenderStats{};
+    }
+    return _renderer.drawTextToCanvas(canvas, text, x, y, width, height, wrap);
+}
+
+RenderStats PaperS3EDCFontManager::drawCompactTextToCanvas(M5Canvas& canvas, const char* text, int x, int y, int width, int height, bool wrap) {
+    if (!_compactReady) {
+        return RenderStats{};
+    }
+    return _compactRenderer.drawTextToCanvas(canvas, text, x, y, width, height, wrap);
+}
+
 RenderStats PaperS3EDCFontManager::drawPreviewText(size_t index, const char* text, int x, int y, int width, int height, bool wrap) {
     if (index >= kPreviewFontCount || !_previewSlots[index].ready || !_previewSlots[index].loadedPath) {
         return RenderStats{};

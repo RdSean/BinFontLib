@@ -28,7 +28,7 @@ constexpr int kStatusBatteryWidth = 30;
 constexpr int kMessageTimeColumnWidth = 52;
 constexpr int kMessageTimeGap = 10;
 constexpr const char* kTabLabels[] = {"今日", "成长", "消息", "配置"};
-constexpr int kSettingsRowCount = 5;
+constexpr int kSettingsRowCount = 6;
 constexpr const char* kWeekdayCn[] = {"星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"};
 
 bool sameText(const char* left, const char* right) {
@@ -113,10 +113,32 @@ const char* passwordKeyLabel(int row, int col, bool uppercase) {
     };
     return uppercase ? upperRows[row][col] : lowerRows[row][col];
 }
+
+const char* epdModeLabel(EpdRefreshMode mode) {
+    switch (mode) {
+        case EpdRefreshMode::Fast: return "Fast";
+        case EpdRefreshMode::Fastest: return "Fastest";
+        case EpdRefreshMode::Quality: return "Quality";
+        case EpdRefreshMode::Text:
+        default:
+            return "Text";
+    }
+}
+
+epd_mode_t epdModeValue(EpdRefreshMode mode) {
+    switch (mode) {
+        case EpdRefreshMode::Fast: return epd_mode_t::epd_fast;
+        case EpdRefreshMode::Fastest: return epd_mode_t::epd_fastest;
+        case EpdRefreshMode::Quality: return epd_mode_t::epd_quality;
+        case EpdRefreshMode::Text:
+        default:
+            return epd_mode_t::epd_text;
+    }
+}
 }  // namespace
 
 PaperS3EDCRenderer::PaperS3EDCRenderer(lgfx::LGFXBase* display, PaperS3EDCFontManager* fonts)
-    : _display(display), _fonts(fonts) {}
+    : _display(display), _fonts(fonts), _messageViewportCanvas(&M5.Display) {}
 
 void PaperS3EDCRenderer::begin() {
     _display->setRotation(0);
@@ -128,15 +150,41 @@ void PaperS3EDCRenderer::begin() {
     _layout = LayoutMetrics::portrait(_width, _height);
 }
 
-void PaperS3EDCRenderer::applyEpdMode() {
+void PaperS3EDCRenderer::applyEpdMode(EpdRefreshMode mode) {
     if (M5.Display.isEPD()) {
-        M5.Display.setEpdMode(epd_mode_t::epd_text);
+        M5.Display.setEpdMode(epdModeValue(mode));
     }
 }
 
-void PaperS3EDCRenderer::displayFrame() {
-    applyEpdMode();
+void PaperS3EDCRenderer::displayFrame(EpdRefreshMode mode) {
+    applyEpdMode(mode);
     _display->display();
+}
+
+void PaperS3EDCRenderer::displayRegion(const RectBox& region, EpdRefreshMode mode) {
+    applyEpdMode(mode);
+    _display->display(region.x, region.y, region.w, region.h);
+}
+
+RectBox PaperS3EDCRenderer::statusBarRegion() const {
+    return RectBox{0, 0, _width, _layout.statusHeight};
+}
+
+RectBox PaperS3EDCRenderer::messageViewportRegion() const {
+    return RectBox{0, _layout.bodyTop, _width, _layout.bodyBottom - _layout.bodyTop};
+}
+
+RectBox PaperS3EDCRenderer::footerRegion() const {
+    return RectBox{0, _layout.footerTop, _width, _layout.height - _layout.footerTop};
+}
+
+bool PaperS3EDCRenderer::ensureMessageViewportCanvas() {
+    const RectBox viewport = messageViewportRegion();
+    if (_messageViewportCanvas.width() == viewport.w && _messageViewportCanvas.height() == viewport.h && _messageViewportCanvas.getBuffer()) {
+        return true;
+    }
+    _messageViewportCanvas.deleteSprite();
+    return _messageViewportCanvas.createSprite(viewport.w, viewport.h);
 }
 
 void PaperS3EDCRenderer::drawUiText(const char* text, int x, int y, int width, int height, bool wrap) {
@@ -310,7 +358,31 @@ int PaperS3EDCRenderer::clampMessagePageIndex(const AppState& state, int request
     return measureMessagePageMetrics(state, requestedPageIndex).currentPageIndex;
 }
 
-void PaperS3EDCRenderer::render(const AppState& state) {
+void PaperS3EDCRenderer::render(const AppState& state, RefreshMode mode) {
+    const RectBox statusRegion = statusBarRegion();
+    const RectBox messageRegion = messageViewportRegion();
+
+    switch (mode) {
+        case RefreshMode::StatusOnly:
+            _display->fillRect(statusRegion.x, statusRegion.y, statusRegion.w, statusRegion.h, TFT_WHITE);
+            drawStatusBar(state);
+            displayFrame(state.config.epdRefreshMode);
+            return;
+        case RefreshMode::MessagePage:
+        case RefreshMode::MessageAppend:
+            if (state.currentPage == AppPage::Messages) {
+                _display->fillRect(statusRegion.x, statusRegion.y, statusRegion.w, statusRegion.h, TFT_WHITE);
+                _display->fillRect(messageRegion.x, messageRegion.y, messageRegion.w, messageRegion.h, TFT_WHITE);
+                drawStatusBar(state);
+                drawMessagesPage(state);
+                displayFrame(state.config.epdRefreshMode);
+                return;
+            }
+            break;
+        case RefreshMode::Full:
+            break;
+    }
+
     _display->fillScreen(TFT_WHITE);
     drawStatusBar(state);
     switch (state.currentPage) {
@@ -324,7 +396,7 @@ void PaperS3EDCRenderer::render(const AppState& state) {
         case AppPage::SyncStatus: drawSyncStatusPage(state); break;
     }
     drawBottomTabs(state);
-    displayFrame();
+    displayFrame(state.config.epdRefreshMode);
 }
 
 void PaperS3EDCRenderer::drawStatusBar(const AppState& state) {
@@ -505,6 +577,13 @@ void PaperS3EDCRenderer::drawMessagesPage(const AppState& state) {
         return;
     }
 
+    if (ensureMessageViewportCanvas()) {
+        drawMessagesPageToCanvas(state, _messageViewportCanvas);
+        const RectBox viewport = messageViewportRegion();
+        _messageViewportCanvas.pushSprite(viewport.x, viewport.y);
+        return;
+    }
+
     const int viewportTop = _layout.bodyTop;
     const int viewportBottom = _layout.bodyBottom;
     const MessagePageMetrics pageMetrics = measureMessagePageMetrics(state, state.messagePage.currentPageIndex);
@@ -543,6 +622,58 @@ void PaperS3EDCRenderer::drawMessagesPage(const AppState& state) {
     _display->clearClipRect();
 }
 
+void PaperS3EDCRenderer::drawMessagesPageToCanvas(const AppState& state, M5Canvas& canvas) {
+    if (state.messageCount == 0) {
+        canvas.fillSprite(TFT_WHITE);
+        return;
+    }
+
+    const int viewportHeight = canvas.height();
+    const MessagePageMetrics pageMetrics = measureMessagePageMetrics(state, state.messagePage.currentPageIndex);
+    int cursorY = 0;
+
+    canvas.fillSprite(TFT_WHITE);
+
+    for (int displayIndex = pageMetrics.startDisplayIndex; displayIndex < pageMetrics.endDisplayIndex; ++displayIndex) {
+        const MessageItem& item = messageForDisplay(state, static_cast<size_t>(displayIndex));
+        const MessageLayout layout = measureMessageLayout(state, static_cast<size_t>(displayIndex), cursorY);
+        cursorY = layout.top + layout.height;
+        if (layout.top >= viewportHeight) {
+            break;
+        }
+
+        if (layout.roundStart) {
+            const int markerX = _layout.padding + (kMessageGutterWidth - kMessageMarkerWidth) / 2;
+            const int markerY = layout.top + kMessageRoundGap + 2;
+            canvas.fillRect(markerX, markerY, kMessageMarkerWidth, kMessageMarkerHeight, TFT_BLACK);
+        }
+
+        const int contentTop = layout.top + (layout.roundStart ? kMessageRoundGap : kMessageTopGap);
+        const int bodyWidth = std::max(24, layout.contentWidth - kMessageTimeColumnWidth - kMessageTimeGap);
+        const int timeX = layout.contentX + bodyWidth + kMessageTimeGap;
+        int bodyX = layout.contentX;
+        if (!item.read) {
+            canvas.fillRect(layout.contentX, contentTop + 10, 8, 8, TFT_BLACK);
+            bodyX += 16;
+        }
+        const int bodyTextWidth = std::max(16, bodyWidth - (bodyX - layout.contentX));
+        char timeLabel[8];
+        formatMessageTime(item.sent_at, timeLabel, sizeof(timeLabel));
+        if (_fonts && _fonts->isReady()) {
+            _fonts->drawCompactTextToCanvas(canvas, timeLabel, timeX, contentTop, kMessageTimeColumnWidth, measureCompactTextHeight(timeLabel, kMessageTimeColumnWidth, false), false);
+            const int bodyHeight = measureMessageTextHeight(item.body, bodyTextWidth, true);
+            _fonts->drawTextToCanvas(canvas, item.body, bodyX, contentTop, bodyTextWidth, bodyHeight, true);
+        } else {
+            canvas.setFont(&fonts::Font2);
+            canvas.setTextColor(TFT_BLACK, TFT_WHITE);
+            canvas.setCursor(timeX, contentTop + 14);
+            canvas.print(timeLabel);
+            canvas.setCursor(bodyX, contentTop + 14);
+            canvas.print(item.body);
+        }
+    }
+}
+
 void PaperS3EDCRenderer::drawSettingsPage(const AppState& state) {
     char line[96];
     drawUiText("设备配置", _layout.padding, _layout.bodyTop, 120, 24, false);
@@ -564,8 +695,10 @@ void PaperS3EDCRenderer::drawSettingsPage(const AppState& state) {
         } else if (index == 1) {
             snprintf(line, sizeof(line), "电池拉取间隔  %u 秒", state.pollIntervalBatterySec);
         } else if (index == 2) {
-            snprintf(line, sizeof(line), "Wi‑Fi 配置");
+            snprintf(line, sizeof(line), "刷新模式  %s", epdModeLabel(state.config.epdRefreshMode));
         } else if (index == 3) {
+            snprintf(line, sizeof(line), "Wi‑Fi 配置");
+        } else if (index == 4) {
             snprintf(line, sizeof(line), "手动同步");
         } else {
             snprintf(line, sizeof(line), "返回今日");

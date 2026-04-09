@@ -10,6 +10,7 @@ constexpr size_t kMaxMessages = 60;
 constexpr size_t kMaxWifiNetworks = 10;
 constexpr size_t kMaxPendingEvents = 24;
 constexpr size_t kContributionCellCount = 28;
+constexpr uint8_t kPartialRefreshThreshold = 10;
 
 constexpr size_t kTaskTitleCapacity = 96;
 constexpr size_t kMessageTitleCapacity = 64;
@@ -43,6 +44,20 @@ enum class SyncState : uint8_t {
     Pending,
     Success,
     Failed,
+};
+
+enum class RefreshMode : uint8_t {
+    Full = 0,
+    StatusOnly,
+    MessagePage,
+    MessageAppend,
+};
+
+enum class EpdRefreshMode : uint8_t {
+    Text = 0,
+    Fast,
+    Fastest,
+    Quality,
 };
 
 struct TaskItem {
@@ -88,6 +103,7 @@ struct DeviceConfig {
     char ssid[kSsidCapacity] = {0};
     char password[kPasswordCapacity] = {0};
     char lastSyncLabel[32] = "未同步";
+    EpdRefreshMode epdRefreshMode = EpdRefreshMode::Text;
 };
 
 struct DailySummary {
@@ -132,6 +148,7 @@ struct AppState {
     ContributionCell contribution[kContributionCellCount]{};
     char statusLine[kStatusTextCapacity] = "准备就绪";
     char statusDetail[kStatusTextCapacity] = "本地模式";
+    uint8_t partialRefreshCount = 0;
 };
 
 inline bool isTaskDone(const TaskItem& item) {
