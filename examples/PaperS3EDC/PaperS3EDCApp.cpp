@@ -19,11 +19,7 @@ namespace {
 constexpr uint32_t kTouchDebounceMs = 180;
 constexpr uint32_t kStatusRefreshMs = 2000;
 constexpr const char* kWeekdayCn[] = {"星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"};
-constexpr int kMessageRowHeight = 82;
-constexpr int kMessageRowGap = 12;
-constexpr int kMessageDetailBodyTop = 140;
-constexpr int kMessageDetailFooterHeight = 44;
-constexpr int kMessageScrollStep = 84;
+constexpr int kMessageScrollStep = 120;
 constexpr uint32_t kMinPollIntervalSec = 2;
 constexpr uint32_t kMaxPollIntervalSec = 30;
 constexpr uint32_t kPollIntervalStepSec = 2;
@@ -137,7 +133,7 @@ void PaperS3EDCController::seedFakeState() {
         copyText(_state.messages[index].source, sizeof(_state.messages[index].source), messages[index].source);
         _state.messages[index].read = messages[index].read;
     }
-    copyText(_state.lastMessageCursor, sizeof(_state.lastMessageCursor), "seed-cursor-001");
+    _state.lastMessageCursor[0] = '\0';
     _state.summary.totalPoints = 42;
     _state.summary.streakDays = 6;
     for (size_t index = 0; index < kContributionCellCount; ++index) {
@@ -259,6 +255,10 @@ void PaperS3EDCController::runManualSync() {
     refreshDateAndPower();
     refreshCounts();
 
+    if (pulledMessages) {
+        _state.messagePage.currentPageIndex = std::max(0, _renderer.messagePageCount(_state) - 1);
+    }
+
     if (pushed || pulled || pulledMessages) {
         persistState();
         persistConfig();
@@ -268,7 +268,7 @@ void PaperS3EDCController::runManualSync() {
     if (pushed && pulled && pulledMessages) {
         setStatus("同步完成", "任务和消息已更新");
     } else if (pulledMessages && !pushed && !pulled) {
-        setStatus("消息已拉取", "relay 已刷新");
+        setStatus("消息更新", "自动刷新完成");
     } else if (pushed && pulled) {
         setStatus("同步完成", "已更新任务");
     } else if (pushed) {
@@ -290,9 +290,10 @@ void PaperS3EDCController::maybePollMessages(uint32_t now) {
     }
 
     if (_sync.pullMessages(_state, kRelayDeviceId)) {
+        _state.messagePage.currentPageIndex = std::max(0, _renderer.messagePageCount(_state) - 1);
         persistState();
         persistConfig();
-        if (_state.currentPage == AppPage::Messages || _state.currentPage == AppPage::MessageDetail) {
+        if (_state.currentPage == AppPage::Messages) {
             _renderer.render(_state);
         }
     }
@@ -348,6 +349,9 @@ void PaperS3EDCController::refreshCounts() {
 
 void PaperS3EDCController::showPage(AppPage page) {
     _state.currentPage = page;
+    if (_state.currentPage == AppPage::Messages) {
+        _state.messagePage.currentPageIndex = _renderer.clampMessagePageIndex(_state, _state.messagePage.currentPageIndex);
+    }
     _renderer.render(_state);
 }
 
@@ -440,49 +444,20 @@ void PaperS3EDCController::handleTouch(int x, int y) {
     }
 
     if (_state.currentPage == AppPage::Messages) {
-        const int listTop = _layout.bodyTop + 62;
-        for (size_t index = 0; index < _state.messageCount && index < 4; ++index) {
-            RectBox row{_layout.padding,
-                        listTop + (int)index * (kMessageRowHeight + kMessageRowGap),
-                        _layout.width - _layout.padding * 2,
-                        kMessageRowHeight};
-            if (!row.contains(x, y)) {
-                continue;
-            }
-            _state.messagePage.selectedMessageIndex = (int)index;
-            _state.messagePage.selectedMessageDetailIndex = (int)index;
-            _state.messagePage.messageScrollOffset = 0;
-            _state.messages[index].read = true;
-            setStatus("打开消息", _state.messages[index].title);
-            showPage(AppPage::MessageDetail);
-            return;
-        }
-        return;
-    }
-
-    if (_state.currentPage == AppPage::MessageDetail) {
-        const RectBox backRow{_layout.padding,
-                              _layout.bodyBottom - kMessageDetailFooterHeight,
-                              _layout.width - _layout.padding * 2,
-                              kMessageDetailFooterHeight};
-        if (backRow.contains(x, y)) {
-            setStatus("返回消息页", "继续查看列表");
-            showPage(AppPage::Messages);
+        if (y < _layout.bodyTop || y > _layout.bodyBottom) {
             return;
         }
 
-        if (y < kMessageDetailBodyTop || y > (_layout.bodyBottom - kMessageDetailFooterHeight - 8)) {
-            return;
-        }
-
-        if (y < (_layout.bodyTop + (_layout.bodyBottom - _layout.bodyTop) / 2)) {
-            _state.messagePage.messageScrollOffset = std::max(0, _state.messagePage.messageScrollOffset - kMessageScrollStep);
-            setStatus("消息详情", "向上滚动");
+        const int midpointX = _layout.padding + ((_layout.width - _layout.padding * 2) / 2);
+        if (x < midpointX) {
+            _state.messagePage.currentPageIndex = _renderer.clampMessagePageIndex(_state, _state.messagePage.currentPageIndex - 1);
+            setStatus("消息", "上一页");
         } else {
-            _state.messagePage.messageScrollOffset += kMessageScrollStep;
-            setStatus("消息详情", "向下滚动");
+            _state.messagePage.currentPageIndex = _renderer.clampMessagePageIndex(_state, _state.messagePage.currentPageIndex + 1);
+            setStatus("消息", "下一页");
         }
-        showPage(AppPage::MessageDetail);
+        persistState();
+        showPage(AppPage::Messages);
         return;
     }
 
@@ -560,6 +535,7 @@ void PaperS3EDCController::begin() {
         if (_storage.loadState(_state)) {
             refreshDateAndPower();
             refreshCounts();
+            _state.messagePage.currentPageIndex = _renderer.clampMessagePageIndex(_state, _state.messagePage.currentPageIndex);
             setStatus("已恢复状态", _state.config.wifiConfigured ? _state.config.ssid : "本地缓存");
         }
     }

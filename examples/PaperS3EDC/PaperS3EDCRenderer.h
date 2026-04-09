@@ -14,28 +14,53 @@ public:
 
     void begin();
     void render(const AppState& state);
+    int messagePageCount(const AppState& state) const;
+    int clampMessagePageIndex(const AppState& state, int requestedPageIndex) const;
 
 private:
+    struct MessageLayout {
+        int top = 0;
+        int height = 0;
+        int contentX = 0;
+        int contentWidth = 0;
+        bool roundStart = false;
+    };
+    struct MessagePageMetrics {
+        int pageCount = 0;
+        int currentPageIndex = 0;
+        int startDisplayIndex = 0;
+        int endDisplayIndex = 0;
+    };
+
     void applyEpdMode();
     void displayFrame();
     void drawStatusBar(const AppState& state);
     void drawBottomTabs(const AppState& state);
     void drawTaskMarker(int x, int y, int w, int h, TaskStatus status, bool selected);
     void drawUiText(const char* text, int x, int y, int width, int height, bool wrap = false);
+    void drawCompactText(const char* text, int x, int y, int width, int height, bool wrap = false);
     void drawUiTextCentered(const char* text, int x, int y, int width, int height);
     void drawTodayPage(const AppState& state);
     void drawConfirmPage(const AppState& state);
     void drawProgressPage(const AppState& state);
     void drawMessagesPage(const AppState& state);
-    void drawMessageDetailPage(const AppState& state);
     void drawSettingsPage(const AppState& state);
     void drawWifiListPage(const AppState& state);
     void drawWifiPasswordPage(const AppState& state);
     void drawSyncStatusPage(const AppState& state);
+    void drawStatusSyncIcon(int x, int y, int size, SyncState state);
     void drawBatteryBar(int x, int y, int width, int height, int32_t percent, bool charging);
     void drawNotionLineArt(int x, int y, int w, int h);
     void drawKeyboardGrid(const AppState& state, int x, int y, int keyW, int keyH, int gap);
     void drawFallbackBodyMessage(const char* title, const char* detail);
+    size_t messageStorageIndexForDisplay(const AppState& state, size_t displayIndex) const;
+    const MessageItem& messageForDisplay(const AppState& state, size_t displayIndex) const;
+    bool isMessageRoundStart(const AppState& state, size_t displayIndex) const;
+    int measureMessageTextHeight(const char* text, int width, bool wrap) const;
+    int measureCompactTextHeight(const char* text, int width, bool wrap) const;
+    int measureMessageHeight(const MessageItem& item, bool roundStart) const;
+    MessageLayout measureMessageLayout(const AppState& state, size_t displayIndex, int y) const;
+    MessagePageMetrics measureMessagePageMetrics(const AppState& state, int requestedPageIndex) const;
 
     lgfx::LGFXBase* _display = nullptr;
     PaperS3EDCFontManager* _fonts = nullptr;

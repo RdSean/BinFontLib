@@ -1,6 +1,8 @@
 #include "PaperS3EDCSync.h"
 
+#include <ArduinoJson.h>
 #include <Arduino.h>
+#include <HTTPClient.h>
 #include <WiFi.h>
 
 namespace papers3edc {
@@ -12,15 +14,6 @@ struct RemoteTaskSeed {
     uint16_t points;
 };
 
-struct RemoteMessageSeed {
-    const char* cursor;
-    const char* messageId;
-    const char* title;
-    const char* body;
-    const char* sentAt;
-    const char* source;
-};
-
 constexpr RemoteTaskSeed kRemoteTasks[] = {
     {101, "晨读二十分钟", 2},
     {102, "完成数学口算一页", 3},
@@ -29,11 +22,12 @@ constexpr RemoteTaskSeed kRemoteTasks[] = {
     {106, "睡前复盘今天收获", 2},
 };
 
-constexpr RemoteMessageSeed kRelayMessages[] = {
-    {"relay-cursor-001", "relay_2001", "钉钉班级通知", "语文练习请在今晚 20:00 前完成，明早统一检查。", "10:08", "relay://dingtalk"},
-    {"relay-cursor-002", "relay_2002", "家长提醒", "雨天路滑，放学后直接到东门等候，不要自己绕路。", "12:16", "relay://family"},
-    {"relay-cursor-003", "relay_2003", "老师留言", "明天带水彩笔和剪刀，下午美术课会统一使用。", "16:42", "relay://teacher"},
-};
+constexpr const char* kMessageBackendBaseUrl = "http://101.133.156.85:51008";
+constexpr const char* kMessageDeviceEndpoint = "/api/device/messages";
+constexpr const char* kMessageDeviceToken = "paper-s3-local-token";
+constexpr const char* kMessageSource = "dingtalk";
+constexpr uint8_t kMessageRequestLimit = 8;
+constexpr size_t kMessageJsonCapacity = 8192;
 
 void copyText(char* dest, size_t capacity, const char* src) {
     if (!dest || capacity == 0) return;
@@ -61,6 +55,49 @@ int findMessageIndex(const AppState& state, const char* messageId) {
         }
     }
     return -1;
+}
+
+bool isValidTimestampCursor(const char* cursor) {
+    if (!cursor || cursor[0] == '\0') {
+        return false;
+    }
+    const size_t length = strlen(cursor);
+    return length >= 20 && strchr(cursor, 'T') != nullptr && cursor[length - 1] == 'Z';
+}
+
+void copyBackendMessage(MessageItem& item, JsonObjectConst message) {
+    char messageId[sizeof(item.message_id)] = {0};
+    snprintf(messageId, sizeof(messageId), "%lu", message["id"] | 0UL);
+    copyText(item.message_id, sizeof(item.message_id), messageId);
+    copyText(item.title, sizeof(item.title), message["title"] | "");
+    copyText(item.body, sizeof(item.body), message["body"] | "");
+    copyText(item.sent_at, sizeof(item.sent_at), message["sent_at"] | "");
+    copyText(item.source, sizeof(item.source), kMessageSource);
+}
+
+bool mergeMessage(AppState& state, const MessageItem& incoming) {
+    const int existingIndex = findMessageIndex(state, incoming.message_id);
+    if (existingIndex >= 0) {
+        const bool wasRead = state.messages[existingIndex].read;
+        state.messages[existingIndex] = incoming;
+        state.messages[existingIndex].read = wasRead;
+        return false;
+    }
+
+    if (state.messageCount == kMaxMessages) {
+        for (size_t shift = kMaxMessages - 1; shift > 0; --shift) {
+            state.messages[shift] = state.messages[shift - 1];
+        }
+        state.messages[0] = incoming;
+        return true;
+    }
+
+    for (size_t shift = state.messageCount; shift > 0; --shift) {
+        state.messages[shift] = state.messages[shift - 1];
+    }
+    state.messages[0] = incoming;
+    ++state.messageCount;
+    return true;
 }
 
 }  // namespace
@@ -125,61 +162,85 @@ bool PaperS3EDCSyncService::pullMessages(AppState& state, const char* deviceId) 
     }
 
     state.syncState = SyncState::Pending;
-    Serial.printf("[relay] GET /messages?device_id=%s&cursor=%s\n",
-                  deviceId ? deviceId : "papers3-edc",
-                  state.lastMessageCursor[0] ? state.lastMessageCursor : "(none)");
+    const char* resolvedDeviceId = (deviceId && deviceId[0]) ? deviceId : "papers3-demo";
+    if (!isValidTimestampCursor(state.lastMessageCursor)) {
+        state.lastMessageCursor[0] = '\0';
+    }
+    const char* sinceTs = state.lastMessageCursor;
+    String requestUrl = String(kMessageBackendBaseUrl) + kMessageDeviceEndpoint;
+    requestUrl += "?device_id=";
+    requestUrl += resolvedDeviceId;
+    if (sinceTs[0] != '\0') {
+        requestUrl += "&since_ts=";
+        requestUrl += sinceTs;
+    }
+    requestUrl += "&limit=";
+    requestUrl += String(kMessageRequestLimit);
+    Serial.printf("[relay] GET %s\n", requestUrl.c_str());
 
-    size_t startIndex = 0;
-    if (state.lastMessageCursor[0]) {
-        for (size_t index = 0; index < (sizeof(kRelayMessages) / sizeof(kRelayMessages[0])); ++index) {
-            if (strcmp(kRelayMessages[index].cursor, state.lastMessageCursor) == 0) {
-                startIndex = index + 1;
-                break;
-            }
-        }
+    HTTPClient http;
+    if (!http.begin(requestUrl)) {
+        state.syncState = SyncState::Failed;
+        snprintf(state.statusLine, sizeof(state.statusLine), "%s", "消息拉取失败");
+        snprintf(state.statusDetail, sizeof(state.statusDetail), "%s", "连接后端失败");
+        return false;
+    }
+    http.addHeader("X-Device-Token", kMessageDeviceToken);
+    const int statusCode = http.GET();
+    if (statusCode != HTTP_CODE_OK) {
+        http.end();
+        state.syncState = SyncState::Failed;
+        snprintf(state.statusLine, sizeof(state.statusLine), "%s", "接口返回异常");
+        snprintf(state.statusDetail, sizeof(state.statusDetail), "%s", "服务端未正常响应");
+        return false;
+    }
+
+    const String response = http.getString();
+    http.end();
+
+    DynamicJsonDocument document(kMessageJsonCapacity);
+    const DeserializationError error = deserializeJson(document, response);
+    if (error) {
+        state.syncState = SyncState::Failed;
+        snprintf(state.statusLine, sizeof(state.statusLine), "%s", "消息拉取失败");
+        snprintf(state.statusDetail, sizeof(state.statusDetail), "%s", "消息数据解析失败");
+        return false;
+    }
+
+    if (!document["messages"].is<JsonArray>() || !document["next_cursor"].is<const char*>() || !document["has_more"].is<bool>()) {
+        state.syncState = SyncState::Failed;
+        snprintf(state.statusLine, sizeof(state.statusLine), "%s", "接口返回异常");
+        snprintf(state.statusDetail, sizeof(state.statusDetail), "%s", "消息字段不完整");
+        return false;
     }
 
     bool changed = false;
-    for (size_t index = startIndex; index < (sizeof(kRelayMessages) / sizeof(kRelayMessages[0])); ++index) {
-        const RemoteMessageSeed& remote = kRelayMessages[index];
+    JsonArrayConst messages = document["messages"].as<JsonArrayConst>();
+    for (JsonObjectConst remote : messages) {
         MessageItem item{};
-        copyText(item.message_id, sizeof(item.message_id), remote.messageId);
-        copyText(item.title, sizeof(item.title), remote.title);
-        copyText(item.body, sizeof(item.body), remote.body);
-        copyText(item.sent_at, sizeof(item.sent_at), remote.sentAt);
-        copyText(item.source, sizeof(item.source), remote.source);
+        copyBackendMessage(item, remote);
         item.read = false;
-
-        const int existing = findMessageIndex(state, remote.messageId);
-        if (existing >= 0) {
-            state.messages[existing] = item;
-        } else {
-            if (state.messageCount == kMaxMessages) {
-                for (size_t shift = state.messageCount - 1; shift > 0; --shift) {
-                    state.messages[shift] = state.messages[shift - 1];
-                }
-                state.messages[0] = item;
-            } else {
-                for (size_t shift = state.messageCount; shift > 0; --shift) {
-                    state.messages[shift] = state.messages[shift - 1];
-                }
-                state.messages[0] = item;
-                ++state.messageCount;
-            }
+        if (mergeMessage(state, item)) {
+            changed = true;
         }
+    }
 
-        copyText(state.lastMessageCursor, sizeof(state.lastMessageCursor), remote.cursor);
-        changed = true;
+    const char* nextCursor = document["next_cursor"] | "";
+    const bool hasMore = document["has_more"] | false;
+    if (isValidTimestampCursor(nextCursor)) {
+        copyText(state.lastMessageCursor, sizeof(state.lastMessageCursor), nextCursor);
+    } else {
+        state.lastMessageCursor[0] = '\0';
     }
 
     state.syncState = SyncState::Success;
     if (changed) {
         copyText(state.config.lastSyncLabel, sizeof(state.config.lastSyncLabel), "消息已刷新");
         snprintf(state.statusLine, sizeof(state.statusLine), "%s", "消息已更新");
-        snprintf(state.statusDetail, sizeof(state.statusDetail), "%s", "relay 返回新消息");
+        snprintf(state.statusDetail, sizeof(state.statusDetail), "%s", hasMore ? "仍有更多消息" : "已完成本轮拉取");
     } else {
         snprintf(state.statusLine, sizeof(state.statusLine), "%s", "消息无更新");
-        snprintf(state.statusDetail, sizeof(state.statusDetail), "%s", "cursor 已是最新");
+        snprintf(state.statusDetail, sizeof(state.statusDetail), "%s", hasMore ? "等待继续拉取" : "当前已经最新");
     }
     return changed;
 }

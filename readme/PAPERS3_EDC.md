@@ -15,7 +15,7 @@ The current PaperS3 device is read-only for messages: it only polls, caches, and
 - Local storage: `examples/PaperS3EDC/PaperS3EDCStorage.cpp`
 - Sync boundary: `examples/PaperS3EDC/PaperS3EDCSync.cpp`
 - Build config: `platformio.ini`
-- Filesystem asset: `data/霞鹜文楷32.bin`
+- Filesystem asset: `data/LXGWWenKaiLite-for-edc-32.bin`
 
 ## Build
 
@@ -46,9 +46,9 @@ pio device monitor -p /dev/cu.usbmodem2101 -b 115200
 - `今日`：任务优先的主屏
 - `确认完成`：点击任务后进入确认
 - `成长`：积分和贡献图摘要
-- `消息`：消息收件箱列表
-- `消息详情`：查看单条消息并滚动正文
+- `消息`：无边框消息流，按轮次连续显示并整页滚动
 - `配置`：Wi‑Fi、手动同步、返回今日
+- `配置`页底部包含 `字体诊断` 区，本轮用于验证 `LXGWWenKaiLite-for-edc-28.bin` 是否能被真实加载和渲染
 - `Wi‑Fi 列表`：扫描并选择网络
 - `密码输入`：设备端矩形键盘输入
 
@@ -77,6 +77,9 @@ pio device monitor -p /dev/cu.usbmodem2101 -b 115200
 - Manual sync first pushes pending completion events, then pulls a fake "today tasks" snapshot and message relay payload
 - Pull sync keeps local completed tasks as the winning state so offline completion is not rolled back by a later refresh
 - Timed background polling refreshes the message inbox on the configured cadence
+- Message inbox uses a single scrollable stream instead of per-message detail navigation
+- The first message in a round gets a left-side marker; follow-up messages keep the same gutter without another marker
+- Settings-page diagnostics can independently probe multiple candidate preview fonts from LittleFS
 
 ## Stored files
 

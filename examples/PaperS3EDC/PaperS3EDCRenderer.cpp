@@ -1,6 +1,7 @@
 #include "PaperS3EDCRenderer.h"
 
 #include <algorithm>
+#include <ctype.h>
 #include <stdio.h>
 
 namespace papers3edc {
@@ -11,39 +12,89 @@ constexpr int kSectionGap = 16;
 constexpr int kTitleLineHeight = 38;
 constexpr int kKeyboardRows = 4;
 constexpr int kKeyboardCols = 10;
-constexpr int kMessageCardHeight = 82;
-constexpr int kMessageCardGap = 12;
-constexpr int kMessageDetailBodyTop = 140;
-constexpr int kMessageDetailFooterHeight = 44;
-constexpr int kMessageScrollStep = 84;
+constexpr int kMessageTopGap = 6;
+constexpr int kMessageRoundGap = 18;
+constexpr int kMessageBottomGap = 10;
+constexpr int kMessageContentGap = 8;
+constexpr int kMessageMetaGap = 6;
+constexpr int kMessageGutterWidth = 22;
+constexpr int kMessageMarkerWidth = 6;
+constexpr int kMessageMarkerHeight = 34;
+constexpr int kMessageRoundWindowMinutes = 3;
+constexpr int kStatusIconSize = 18;
+constexpr int kStatusSyncSlotWidth = 24;
+constexpr int kStatusTaskSlotWidth = 40;
+constexpr int kStatusBatteryWidth = 30;
+constexpr int kMessageTimeColumnWidth = 52;
+constexpr int kMessageTimeGap = 10;
 constexpr const char* kTabLabels[] = {"今日", "成长", "消息", "配置"};
 constexpr int kSettingsRowCount = 5;
 constexpr const char* kWeekdayCn[] = {"星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"};
+
+bool sameText(const char* left, const char* right) {
+    if (!left || !right) {
+        return false;
+    }
+    return strcmp(left, right) == 0;
+}
+
+int parseMessageMinutes(const char* text) {
+    if (!text || !text[0]) {
+        return -1;
+    }
+
+    int year = 0;
+    int month = 0;
+    int day = 0;
+    int hour = 0;
+    int minute = 0;
+    if (sscanf(text, "%d-%d-%dT%d:%d", &year, &month, &day, &hour, &minute) == 5
+        || sscanf(text, "%d-%d-%d %d:%d", &year, &month, &day, &hour, &minute) == 5) {
+        return (((year * 12) + month) * 31 + day) * 24 * 60 + hour * 60 + minute;
+    }
+
+    if (isdigit((unsigned char)text[0]) && isdigit((unsigned char)text[1]) && text[2] == ':') {
+        if (sscanf(text, "%d:%d", &hour, &minute) == 2) {
+            return hour * 60 + minute;
+        }
+    }
+
+    return -1;
+}
+
+void formatMessageTime(const char* text, char* out, size_t outSize) {
+    if (!out || outSize == 0) return;
+    out[0] = '\0';
+    if (!text || !text[0]) {
+        return;
+    }
+
+    int year = 0;
+    int month = 0;
+    int day = 0;
+    int hour = 0;
+    int minute = 0;
+    if (sscanf(text, "%d-%d-%dT%d:%d", &year, &month, &day, &hour, &minute) == 5
+        || sscanf(text, "%d-%d-%d %d:%d", &year, &month, &day, &hour, &minute) == 5
+        || sscanf(text, "%d:%d", &hour, &minute) == 2) {
+        snprintf(out, outSize, "%02d:%02d", hour, minute);
+        return;
+    }
+
+    snprintf(out, outSize, "%.5s", text);
+}
 
 const char* pageTitle(AppPage page) {
     switch (page) {
         case AppPage::Today: return "今日安排";
         case AppPage::Confirm: return "确认完成";
         case AppPage::Progress: return "成长进度";
-        case AppPage::Messages: return "消息收件箱";
-        case AppPage::MessageDetail: return "消息详情";
+        case AppPage::Messages: return "消息";
         case AppPage::Settings: return "设备配置";
         case AppPage::WifiList: return "选择网络";
         case AppPage::WifiPassword: return "输入密码";
         case AppPage::SyncStatus: return "同步结果";
         default: return "PaperS3 EDC";
-    }
-}
-
-const char* syncStateName(SyncState state) {
-    switch (state) {
-        case SyncState::Offline: return "离线";
-        case SyncState::Pending: return "同步中";
-        case SyncState::Success: return "已同步";
-        case SyncState::Failed: return "失败";
-        case SyncState::Idle:
-        default:
-            return "待机";
     }
 }
 
@@ -99,6 +150,19 @@ void PaperS3EDCRenderer::drawUiText(const char* text, int x, int y, int width, i
     _display->print(text);
 }
 
+void PaperS3EDCRenderer::drawCompactText(const char* text, int x, int y, int width, int height, bool wrap) {
+    if (_fonts && _fonts->isReady()) {
+        RenderStats stats = _fonts->drawCompactText(text, x, y, width, height, wrap);
+        if (stats.glyph_found > 0) {
+            return;
+        }
+    }
+
+    _display->setFont(&fonts::Font2);
+    _display->setCursor(x, y + 14);
+    _display->print(text);
+}
+
 void PaperS3EDCRenderer::drawUiTextCentered(const char* text, int x, int y, int width, int height) {
     if (_fonts && _fonts->isReady()) {
         _fonts->drawText(text, x + 6, y + 6, width - 12, height - 12, false);
@@ -110,6 +174,142 @@ void PaperS3EDCRenderer::drawUiTextCentered(const char* text, int x, int y, int 
     _display->print(text);
 }
 
+int PaperS3EDCRenderer::measureMessageTextHeight(const char* text, int width, bool wrap) const {
+    if (!text || !text[0] || width <= 0) {
+        return 0;
+    }
+
+    if (_fonts) {
+        const int measured = _fonts->measureTextHeight(text, width, wrap);
+        if (measured > 0) {
+            return measured;
+        }
+    }
+
+    constexpr int kFallbackLineHeight = 16;
+    if (!wrap) {
+        return kFallbackLineHeight;
+    }
+    const int charsPerLine = std::max(1, width / 8);
+    const int lines = std::max(1, (int)((strlen(text) + charsPerLine - 1) / charsPerLine));
+    return lines * kFallbackLineHeight;
+}
+
+int PaperS3EDCRenderer::measureCompactTextHeight(const char* text, int width, bool wrap) const {
+    if (!text || !text[0] || width <= 0) {
+        return 0;
+    }
+
+    if (_fonts) {
+        const int measured = _fonts->measureCompactTextHeight(text, width, wrap);
+        if (measured > 0) {
+            return measured;
+        }
+    }
+
+    constexpr int kFallbackLineHeight = 16;
+    if (!wrap) {
+        return kFallbackLineHeight;
+    }
+    const int charsPerLine = std::max(1, width / 8);
+    const int lines = std::max(1, (int)((strlen(text) + charsPerLine - 1) / charsPerLine));
+    return lines * kFallbackLineHeight;
+}
+
+size_t PaperS3EDCRenderer::messageStorageIndexForDisplay(const AppState& state, size_t displayIndex) const {
+    return state.messageCount - 1 - displayIndex;
+}
+
+const MessageItem& PaperS3EDCRenderer::messageForDisplay(const AppState& state, size_t displayIndex) const {
+    return state.messages[messageStorageIndexForDisplay(state, displayIndex)];
+}
+
+bool PaperS3EDCRenderer::isMessageRoundStart(const AppState& state, size_t displayIndex) const {
+    if (displayIndex == 0 || displayIndex >= state.messageCount) {
+        return true;
+    }
+
+    const MessageItem& current = messageForDisplay(state, displayIndex);
+    const MessageItem& previous = messageForDisplay(state, displayIndex - 1);
+
+    const int currentMinutes = parseMessageMinutes(current.sent_at);
+    const int previousMinutes = parseMessageMinutes(previous.sent_at);
+    if (currentMinutes < 0 || previousMinutes < 0) {
+        return true;
+    }
+
+    const int delta = currentMinutes - previousMinutes;
+    return delta < 0 || delta > kMessageRoundWindowMinutes;
+}
+
+int PaperS3EDCRenderer::measureMessageHeight(const MessageItem& item, bool roundStart) const {
+    const int contentWidth = _width - _layout.padding * 2 - kMessageGutterWidth;
+    const int bodyWidth = std::max(24, contentWidth - kMessageTimeColumnWidth - kMessageTimeGap);
+    const int bodyHeight = measureMessageTextHeight(item.body, bodyWidth, true);
+    const int topGap = roundStart ? kMessageRoundGap : kMessageTopGap;
+    return topGap + bodyHeight + kMessageBottomGap;
+}
+
+PaperS3EDCRenderer::MessageLayout PaperS3EDCRenderer::measureMessageLayout(const AppState& state, size_t displayIndex, int y) const {
+    MessageLayout layout;
+    layout.roundStart = isMessageRoundStart(state, displayIndex);
+    layout.top = y;
+    layout.contentX = _layout.padding + kMessageGutterWidth;
+    layout.contentWidth = _width - layout.contentX - _layout.padding;
+    layout.height = measureMessageHeight(messageForDisplay(state, displayIndex), layout.roundStart);
+    return layout;
+}
+
+PaperS3EDCRenderer::MessagePageMetrics PaperS3EDCRenderer::measureMessagePageMetrics(const AppState& state, int requestedPageIndex) const {
+    MessagePageMetrics metrics;
+    if (state.messageCount == 0) {
+        return metrics;
+    }
+
+    const int viewportHeight = _layout.bodyBottom - _layout.bodyTop;
+    int usedHeight = 0;
+    int pageIndex = 0;
+    int pageStartDisplayIndex = 0;
+    bool foundPage = false;
+    for (size_t displayIndex = 0; displayIndex < state.messageCount; ++displayIndex) {
+        const int itemHeight = measureMessageHeight(messageForDisplay(state, displayIndex), isMessageRoundStart(state, displayIndex));
+        const bool needNextPage = usedHeight > 0 && (usedHeight + itemHeight) > viewportHeight;
+        if (needNextPage) {
+            if (pageIndex == requestedPageIndex) {
+                metrics.startDisplayIndex = pageStartDisplayIndex;
+                metrics.endDisplayIndex = static_cast<int>(displayIndex);
+                foundPage = true;
+            }
+            ++pageIndex;
+            pageStartDisplayIndex = static_cast<int>(displayIndex);
+            usedHeight = 0;
+        }
+        usedHeight += itemHeight;
+    }
+
+    metrics.pageCount = pageIndex + 1;
+    metrics.currentPageIndex = std::max(0, std::min(requestedPageIndex, metrics.pageCount - 1));
+
+    if (!foundPage) {
+        if (metrics.currentPageIndex == pageIndex) {
+            metrics.startDisplayIndex = pageStartDisplayIndex;
+            metrics.endDisplayIndex = static_cast<int>(state.messageCount);
+        } else {
+            return measureMessagePageMetrics(state, metrics.currentPageIndex);
+        }
+    }
+
+    return metrics;
+}
+
+int PaperS3EDCRenderer::messagePageCount(const AppState& state) const {
+    return measureMessagePageMetrics(state, state.messagePage.currentPageIndex).pageCount;
+}
+
+int PaperS3EDCRenderer::clampMessagePageIndex(const AppState& state, int requestedPageIndex) const {
+    return measureMessagePageMetrics(state, requestedPageIndex).currentPageIndex;
+}
+
 void PaperS3EDCRenderer::render(const AppState& state) {
     _display->fillScreen(TFT_WHITE);
     drawStatusBar(state);
@@ -118,7 +318,6 @@ void PaperS3EDCRenderer::render(const AppState& state) {
         case AppPage::Confirm: drawConfirmPage(state); break;
         case AppPage::Progress: drawProgressPage(state); break;
         case AppPage::Messages: drawMessagesPage(state); break;
-        case AppPage::MessageDetail: drawMessageDetailPage(state); break;
         case AppPage::Settings: drawSettingsPage(state); break;
         case AppPage::WifiList: drawWifiListPage(state); break;
         case AppPage::WifiPassword: drawWifiPasswordPage(state); break;
@@ -131,14 +330,26 @@ void PaperS3EDCRenderer::render(const AppState& state) {
 void PaperS3EDCRenderer::drawStatusBar(const AppState& state) {
     _display->fillRect(0, 0, _width, _layout.statusHeight, TFT_WHITE);
     _display->drawLine(0, _layout.statusHeight - 1, _width, _layout.statusHeight - 1, TFT_BLACK);
-    drawUiText(pageTitle(state.currentPage), _layout.padding, 8, 188, 28, false);
+    const int batteryX = _width - _layout.padding - kStatusBatteryWidth - 4;
+    const int batteryY = 10;
+    const int taskX = batteryX - kStatusTaskSlotWidth - 8;
+    const int syncX = taskX - kStatusSyncSlotWidth - 8;
+    const int titleWidth = std::max(96, syncX - _layout.padding - 8);
 
-    drawBatteryBar(_width - 132, 10, 42, 18, state.summary.batteryPercent, state.summary.charging);
+    char titleLabel[32];
+    if (state.currentPage == AppPage::Messages && state.messageCount > 0) {
+        const MessagePageMetrics pageMetrics = measureMessagePageMetrics(state, state.messagePage.currentPageIndex);
+        snprintf(titleLabel, sizeof(titleLabel), "%s %d/%d", pageTitle(state.currentPage), pageMetrics.currentPageIndex + 1, pageMetrics.pageCount);
+    } else {
+        snprintf(titleLabel, sizeof(titleLabel), "%s", pageTitle(state.currentPage));
+    }
+    drawCompactText(titleLabel, _layout.padding, 12, titleWidth, 24, false);
+    drawStatusSyncIcon(syncX, 12, kStatusIconSize, state.syncState);
+    drawBatteryBar(batteryX, batteryY, kStatusBatteryWidth, 18, state.summary.batteryPercent, state.summary.charging);
 
-    _display->setFont(&fonts::Font2);
-    _display->setCursor(_width - 82, 12);
-    _display->printf("%u/%u", state.summary.completedTasks, state.summary.totalTasks);
-    drawUiText(syncStateName(state.syncState), _width - 82, 28, 72, 20, false);
+    char progress[16];
+    snprintf(progress, sizeof(progress), "%u/%u", state.summary.completedTasks, state.summary.totalTasks);
+    drawCompactText(progress, taskX, 12, kStatusTaskSlotWidth, 20, false);
 }
 
 void PaperS3EDCRenderer::drawBottomTabs(const AppState& state) {
@@ -149,7 +360,7 @@ void PaperS3EDCRenderer::drawBottomTabs(const AppState& state) {
         const int x = _layout.footerButtonRect(index).x;
         const bool active = ((index == 0 && state.currentPage == AppPage::Today)
                           || (index == 1 && state.currentPage == AppPage::Progress)
-                          || (index == 2 && (state.currentPage == AppPage::Messages || state.currentPage == AppPage::MessageDetail))
+                          || (index == 2 && state.currentPage == AppPage::Messages)
                           || (index == 3 && (state.currentPage == AppPage::Settings || state.currentPage == AppPage::WifiList || state.currentPage == AppPage::WifiPassword || state.currentPage == AppPage::SyncStatus)));
         _display->drawRect(x, y + 10, buttonWidth, _layout.footerButtonHeight, TFT_BLACK);
         if (active) {
@@ -289,65 +500,47 @@ void PaperS3EDCRenderer::drawProgressPage(const AppState& state) {
 }
 
 void PaperS3EDCRenderer::drawMessagesPage(const AppState& state) {
-    char line[96];
-    snprintf(line, sizeof(line), "本地缓存 %u 条", (unsigned)state.messageCount);
-    drawUiText(line, _layout.padding, _layout.bodyTop, 180, 24, false);
-    drawUiText("点击消息查看详情", _layout.padding, _layout.bodyTop + 28, 180, 24, false);
-
     if (state.messageCount == 0) {
         drawFallbackBodyMessage("暂无消息", "等待下一次拉取");
         return;
     }
 
-    const int listTop = _layout.bodyTop + 62;
-    for (size_t index = 0; index < state.messageCount && index < 4; ++index) {
-        const int y = listTop + (int)index * (kMessageCardHeight + kMessageCardGap);
-        const bool selected = ((int)index == state.messagePage.selectedMessageIndex);
-        _display->drawRect(_layout.padding, y, _width - _layout.padding * 2, kMessageCardHeight, TFT_BLACK);
-        if (selected) {
-            _display->fillRect(_layout.padding + 1, y + 1, _width - _layout.padding * 2 - 2, kMessageCardHeight - 2, TFT_BLACK);
-            _display->setTextColor(TFT_WHITE, TFT_BLACK);
+    const int viewportTop = _layout.bodyTop;
+    const int viewportBottom = _layout.bodyBottom;
+    const MessagePageMetrics pageMetrics = measureMessagePageMetrics(state, state.messagePage.currentPageIndex);
+    int cursorY = viewportTop;
+
+    _display->setClipRect(0, viewportTop, _width, viewportBottom - viewportTop);
+
+    for (int displayIndex = pageMetrics.startDisplayIndex; displayIndex < pageMetrics.endDisplayIndex; ++displayIndex) {
+        const MessageItem& item = messageForDisplay(state, static_cast<size_t>(displayIndex));
+        const MessageLayout layout = measureMessageLayout(state, static_cast<size_t>(displayIndex), cursorY);
+        cursorY = layout.top + layout.height;
+
+        if (layout.roundStart) {
+            const int markerX = _layout.padding + (kMessageGutterWidth - kMessageMarkerWidth) / 2;
+            const int markerY = layout.top + kMessageRoundGap + 2;
+            _display->fillRect(markerX, markerY, kMessageMarkerWidth, kMessageMarkerHeight, TFT_BLACK);
         }
 
-        const MessageItem& item = state.messages[index];
+        const int contentTop = layout.top + (layout.roundStart ? kMessageRoundGap : kMessageTopGap);
+        const int bodyWidth = std::max(24, layout.contentWidth - kMessageTimeColumnWidth - kMessageTimeGap);
+        const int timeX = layout.contentX + bodyWidth + kMessageTimeGap;
+        int bodyX = layout.contentX;
         if (!item.read) {
-            drawUiText("未读", _layout.padding + 12, y + 8, 48, 20, false);
+            _display->fillRect(layout.contentX, contentTop + 10, 8, 8, TFT_BLACK);
+            bodyX += 16;
         }
-        drawUiText(item.title, _layout.padding + 64, y + 8, _width - _layout.padding * 2 - 150, 22, false);
-        drawUiText(item.body, _layout.padding + 12, y + 34, _width - _layout.padding * 2 - 24, 20, false);
-        drawUiText(item.sent_at, _width - 108, y + 8, 80, 20, false);
-        drawUiText(item.source, _layout.padding + 12, y + 56, 120, 18, false);
-        _display->setTextColor(TFT_BLACK, TFT_WHITE);
-    }
-}
+        const int bodyTextWidth = std::max(16, bodyWidth - (bodyX - layout.contentX));
+        char timeLabel[8];
+        formatMessageTime(item.sent_at, timeLabel, sizeof(timeLabel));
+        drawCompactText(timeLabel, timeX, contentTop, kMessageTimeColumnWidth, measureCompactTextHeight(timeLabel, kMessageTimeColumnWidth, false), false);
 
-void PaperS3EDCRenderer::drawMessageDetailPage(const AppState& state) {
-    if (state.messagePage.selectedMessageDetailIndex < 0
-        || state.messagePage.selectedMessageDetailIndex >= (int)state.messageCount) {
-        drawFallbackBodyMessage("没有选中消息", "返回消息页重新选择");
-        return;
+        const int bodyHeight = measureMessageTextHeight(item.body, bodyTextWidth, true);
+        drawUiText(item.body, bodyX, contentTop, bodyTextWidth, bodyHeight, true);
     }
 
-    const MessageItem& item = state.messages[state.messagePage.selectedMessageDetailIndex];
-    _display->drawRect(_layout.padding, _layout.bodyTop, _width - _layout.padding * 2, 56, TFT_BLACK);
-    drawUiText(item.title, _layout.padding + 12, _layout.bodyTop + 8, _width - _layout.padding * 2 - 24, 20, false);
-    char metaLine[96];
-    snprintf(metaLine, sizeof(metaLine), "%s | %s", item.source, item.sent_at);
-    drawUiText(metaLine, _layout.padding + 12, _layout.bodyTop + 30, _width - _layout.padding * 2 - 24, 18, false);
-
-    const int bodyHeight = _layout.bodyBottom - kMessageDetailBodyTop - kMessageDetailFooterHeight - 8;
-    _display->drawRect(_layout.padding, kMessageDetailBodyTop, _width - _layout.padding * 2, bodyHeight, TFT_BLACK);
-    drawUiText(item.body,
-               _layout.padding + 12,
-               kMessageDetailBodyTop + 10 - state.messagePage.messageScrollOffset,
-               _width - _layout.padding * 2 - 24,
-               bodyHeight + state.messagePage.messageScrollOffset + 80,
-               true);
-
-    const int footerY = _layout.bodyBottom - kMessageDetailFooterHeight;
-    _display->drawRect(_layout.padding, footerY, _width - _layout.padding * 2, kMessageDetailFooterHeight, TFT_BLACK);
-    drawUiText("返回", _layout.padding + 14, footerY + 10, 48, 20, false);
-    drawUiText("上滑 / 下滑滚动消息详情", _layout.padding + 74, footerY + 10, _width - _layout.padding * 2 - 88, 20, false);
+    _display->clearClipRect();
 }
 
 void PaperS3EDCRenderer::drawSettingsPage(const AppState& state) {
@@ -379,6 +572,53 @@ void PaperS3EDCRenderer::drawSettingsPage(const AppState& state) {
         }
         drawUiText(line, _layout.padding + 14, y + 8, _width - _layout.padding * 2 - 28, 24, false);
         _display->setTextColor(TFT_BLACK, TFT_WHITE);
+    }
+
+    const size_t previewCount = _fonts ? _fonts->previewSlotCount() : 0;
+    const int diagTop = _layout.settingsRowRect(kSettingsRowCount - 1).y + 62;
+    const int diagHeight = std::max(168, _layout.bodyBottom - diagTop - 8);
+    _display->drawRect(_layout.padding, diagTop, _width - _layout.padding * 2, diagHeight, TFT_BLACK);
+    drawUiText("字体诊断", _layout.padding + 12, diagTop + 10, 160, 24, false);
+
+    if (!_fonts || previewCount == 0) {
+        drawUiText("诊断字体未就绪", _layout.padding + 12, diagTop + 40, _width - _layout.padding * 2 - 24, 22, false);
+        return;
+    }
+
+    const int contentTop = diagTop + 38;
+    const int contentLeft = _layout.padding + 12;
+    const int contentWidth = _width - _layout.padding * 2 - 24;
+    const int sectionGap = 8;
+    const int sectionHeight = std::max(84, (diagHeight - 38 - (int)(previewCount - 1) * sectionGap) / (int)previewCount);
+    for (size_t index = 0; index < previewCount; ++index) {
+        const PaperS3EDCFontManager::PreviewFontSlot& slot = _fonts->previewSlot(index);
+        const int sectionTop = contentTop + (int)index * (sectionHeight + sectionGap);
+        if (index > 0) {
+            _display->drawFastHLine(_layout.padding + 10, sectionTop - 5, _width - _layout.padding * 2 - 20, TFT_BLACK);
+        }
+
+        char labelLine[96];
+        snprintf(labelLine, sizeof(labelLine), "%s  %s", slot.label ? slot.label : "unknown", slot.ready ? "已加载" : "未加载");
+        drawUiText(labelLine, contentLeft, sectionTop, contentWidth, 22, false);
+
+        if (slot.ready) {
+            snprintf(labelLine, sizeof(labelLine), "状态：已加载  %dpx", _fonts->getPreviewFontHeight(index));
+            drawUiText(labelLine, contentLeft, sectionTop + 22, contentWidth, 22, false);
+            snprintf(labelLine, sizeof(labelLine), "%s  %s", slot.loadedStorageName ? slot.loadedStorageName : "None", slot.loadedPath ? slot.loadedPath : "(none)");
+            drawUiText(labelLine, contentLeft, sectionTop + 44, contentWidth, 22, false);
+            const int sampleTop = sectionTop + 68;
+            const int sampleHeight = std::max(16, sectionHeight - 70);
+            _fonts->drawPreviewText(index,
+                                    slot.sample ? slot.sample : "测试",
+                                    contentLeft,
+                                    sampleTop,
+                                    contentWidth,
+                                    sampleHeight,
+                                    false);
+        } else {
+            drawUiText("状态：未找到或加载失败", contentLeft, sectionTop + 22, contentWidth, 22, false);
+            drawUiText("检查 LittleFS 中的字体文件", contentLeft, sectionTop + 44, contentWidth, 22, false);
+        }
     }
 }
 
@@ -432,6 +672,35 @@ void PaperS3EDCRenderer::drawBatteryBar(int x, int y, int width, int height, int
     _display->fillRect(x + 2, y + 2, innerWidth, height - 4, TFT_BLACK);
     if (charging) {
         _display->drawFastVLine(x + width / 2, y + 4, height - 8, TFT_WHITE);
+    }
+}
+
+void PaperS3EDCRenderer::drawStatusSyncIcon(int x, int y, int size, SyncState state) {
+    const int right = x + size;
+    const int bottom = y + size;
+    const int midX = x + size / 2;
+    const int midY = y + size / 2;
+    switch (state) {
+        case SyncState::Offline:
+            _display->drawCircle(midX, midY, 6, TFT_BLACK);
+            _display->drawLine(x + 3, bottom - 3, right - 3, y + 3, TFT_BLACK);
+            break;
+        case SyncState::Pending:
+            _display->drawCircle(midX, midY, 6, TFT_BLACK);
+            _display->fillTriangle(right - 6, y + 4, right - 1, y + 5, right - 4, y + 9, TFT_BLACK);
+            _display->fillTriangle(x + 6, bottom - 4, x + 1, bottom - 5, x + 4, bottom - 9, TFT_BLACK);
+            break;
+        case SyncState::Failed:
+            _display->drawTriangle(midX, y + 2, x + 2, bottom - 2, right - 2, bottom - 2, TFT_BLACK);
+            _display->drawFastVLine(midX, y + 6, 5, TFT_BLACK);
+            _display->fillRect(midX - 1, bottom - 6, 3, 3, TFT_BLACK);
+            break;
+        case SyncState::Success:
+        case SyncState::Idle:
+        default:
+            _display->drawCircle(midX, midY, 6, TFT_BLACK);
+            _display->fillCircle(midX, midY, 2, TFT_BLACK);
+            break;
     }
 }
 

@@ -6,6 +6,7 @@ namespace papers3edc {
 namespace {
 constexpr const char* kConfigPath = "/edc_config.txt";
 constexpr const char* kStatePath = "/edc_state.txt";
+constexpr const char* kStateVersion = "EDC_STATE_V1";
 
 void copyText(char* dest, size_t capacity, const char* src) {
     if (!dest || capacity == 0) return;
@@ -93,10 +94,19 @@ bool PaperS3EDCStorage::loadState(AppState& state) {
     state.taskCount = 0;
     state.messageCount = 0;
     state.pendingEventCount = 0;
+    bool headerChecked = false;
     while (file.available()) {
         String line = file.readStringUntil('\n');
         line.trim();
         if (!line.length()) continue;
+        if (!headerChecked) {
+            headerChecked = true;
+            if (line != kStateVersion) {
+                file.close();
+                return false;
+            }
+            continue;
+        }
         if (line.startsWith("totalPoints=")) {
             state.summary.totalPoints = line.substring(12).toInt();
         } else if (line.startsWith("streakDays=")) {
@@ -105,14 +115,13 @@ bool PaperS3EDCStorage::loadState(AppState& state) {
             state.pollIntervalChargingSec = line.substring(24).toInt();
         } else if (line.startsWith("pollIntervalBatterySec=")) {
             state.pollIntervalBatterySec = line.substring(22).toInt();
-        } else if (line.startsWith("selectedMessageIndex=")) {
-            state.messagePage.selectedMessageIndex = line.substring(21).toInt();
-        } else if (line.startsWith("selectedMessageDetailIndex=")) {
-            state.messagePage.selectedMessageDetailIndex = line.substring(27).toInt();
-        } else if (line.startsWith("messageScrollOffset=")) {
-            state.messagePage.messageScrollOffset = line.substring(20).toInt();
+        } else if (line.startsWith("messagePageIndex=")) {
+            state.messagePage.currentPageIndex = std::max(0, static_cast<int>(line.substring(17).toInt()));
         } else if (line.startsWith("cursor=")) {
             copyText(state.lastMessageCursor, sizeof(state.lastMessageCursor), line.substring(7).c_str());
+            if (!strchr(state.lastMessageCursor, 'T')) {
+                state.lastMessageCursor[0] = '\0';
+            }
         } else if (line.startsWith("task|")) {
             if (state.taskCount >= kMaxTasks) continue;
             TaskItem& task = state.tasks[state.taskCount++];
@@ -156,14 +165,12 @@ bool PaperS3EDCStorage::saveState(const AppState& state) {
     if (!_filesystem) return false;
     File file = _filesystem->open(kStatePath, FILE_WRITE);
     if (!file) return false;
-    file.println("EDC_STATE_V1");
+    file.println(kStateVersion);
     file.printf("totalPoints=%u\n", state.summary.totalPoints);
     file.printf("streakDays=%u\n", state.summary.streakDays);
     file.printf("pollIntervalChargingSec=%u\n", state.pollIntervalChargingSec);
     file.printf("pollIntervalBatterySec=%u\n", state.pollIntervalBatterySec);
-    file.printf("selectedMessageIndex=%d\n", state.messagePage.selectedMessageIndex);
-    file.printf("selectedMessageDetailIndex=%d\n", state.messagePage.selectedMessageDetailIndex);
-    file.printf("messageScrollOffset=%d\n", state.messagePage.messageScrollOffset);
+    file.printf("messagePageIndex=%d\n", state.messagePage.currentPageIndex);
     file.printf("cursor=%s\n", state.lastMessageCursor);
     for (size_t index = 0; index < state.taskCount; ++index) {
         const TaskItem& task = state.tasks[index];

@@ -6,14 +6,14 @@
 namespace papers3edc {
 
 constexpr size_t kMaxTasks = 12;
-constexpr size_t kMaxMessages = 8;
+constexpr size_t kMaxMessages = 60;
 constexpr size_t kMaxWifiNetworks = 10;
 constexpr size_t kMaxPendingEvents = 24;
 constexpr size_t kContributionCellCount = 28;
 
 constexpr size_t kTaskTitleCapacity = 96;
 constexpr size_t kMessageTitleCapacity = 64;
-constexpr size_t kMessageBodyCapacity = 384;
+constexpr size_t kMessageBodyCapacity = 200;
 constexpr size_t kMessageMetaCapacity = 32;
 constexpr size_t kMessageCursorCapacity = 48;
 constexpr size_t kStatusTextCapacity = 64;
@@ -25,7 +25,6 @@ enum class AppPage : uint8_t {
     Confirm,
     Progress,
     Messages,
-    MessageDetail,
     Settings,
     WifiList,
     WifiPassword,
@@ -64,9 +63,7 @@ struct MessageItem {
 };
 
 struct MessagePageState {
-    int selectedMessageIndex = 0;
-    int selectedMessageDetailIndex = -1;
-    int messageScrollOffset = 0;
+    int currentPageIndex = 0;
 };
 
 struct ContributionCell {
