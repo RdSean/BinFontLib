@@ -25,6 +25,11 @@
       "name": "BinTestInteractive",
       "base": "examples/BinTestInteractive",
       "files": ["BinTestInteractive.ino"]
+    },
+    {
+      "name": "PaperS3BinFontDemo",
+      "base": "examples/PaperS3BinFontDemo",
+      "files": ["PaperS3BinFontDemo.cpp"]
     }
   ]
 }
