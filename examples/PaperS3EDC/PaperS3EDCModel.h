@@ -16,7 +16,6 @@ constexpr size_t kTaskTitleCapacity = 96;
 constexpr size_t kMessageTitleCapacity = 64;
 constexpr size_t kMessageBodyCapacity = 200;
 constexpr size_t kMessageMetaCapacity = 32;
-constexpr size_t kMessageCursorCapacity = 48;
 constexpr size_t kStatusTextCapacity = 64;
 constexpr size_t kSsidCapacity = 33;
 constexpr size_t kPasswordCapacity = 65;
@@ -27,6 +26,7 @@ enum class AppPage : uint8_t {
     Progress,
     Messages,
     Settings,
+    RefreshLab,
     WifiList,
     WifiPassword,
     SyncStatus,
@@ -60,6 +60,11 @@ enum class EpdRefreshMode : uint8_t {
     Quality,
 };
 
+enum class RefreshLabDrawPath : uint8_t {
+    Direct = 0,
+    Canvas,
+};
+
 struct TaskItem {
     uint16_t id = 0;
     char title[kTaskTitleCapacity] = {0};
@@ -79,6 +84,12 @@ struct MessageItem {
 
 struct MessagePageState {
     int currentPageIndex = 0;
+};
+
+struct RefreshLabState {
+    RefreshLabDrawPath drawPath = RefreshLabDrawPath::Direct;
+    uint16_t statusCounter = 0;
+    uint16_t bodyCounter = 0;
 };
 
 struct ContributionCell {
@@ -129,6 +140,7 @@ struct AppState {
     TaskItem tasks[kMaxTasks]{};
     MessageItem messages[kMaxMessages]{};
     MessagePageState messagePage{};
+    RefreshLabState refreshLab{};
     DailySummary summary{};
     DeviceConfig config{};
     SyncState syncState = SyncState::Idle;
@@ -141,8 +153,7 @@ struct AppState {
     char passwordBuffer[kPasswordCapacity] = {0};
     bool passwordUppercase = false;
     uint32_t pollIntervalChargingSec = 2;  // 插电拉取间隔
-    uint32_t pollIntervalBatterySec = 10;  // 电池拉取间隔
-    char lastMessageCursor[kMessageCursorCapacity] = {0};
+    uint32_t pollIntervalBatterySec = 5;  // 电池拉取间隔
     size_t pendingEventCount = 0;
     PendingEvent pendingEvents[kMaxPendingEvents]{};
     ContributionCell contribution[kContributionCellCount]{};

@@ -5,7 +5,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Iterator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .config import get_settings
@@ -66,4 +66,32 @@ def get_db_session() -> Iterator[Session]:
 def create_tables() -> None:
     from . import models  # noqa: F401
 
-    Base.metadata.create_all(bind=get_engine_for_current_settings())
+    engine = get_engine_for_current_settings()
+    Base.metadata.create_all(bind=engine)
+    _ensure_sqlite_message_schema(engine)
+
+
+def _ensure_sqlite_message_schema(engine) -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    inspector = inspect(engine)
+    if "messages" not in inspector.get_table_names():
+        return
+
+    columns = {column["name"] for column in inspector.get_columns("messages")}
+    with engine.begin() as conn:
+        if "is_read" not in columns:
+            conn.execute(text("ALTER TABLE messages ADD COLUMN is_read BOOLEAN NOT NULL DEFAULT 0"))
+        conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_messages_source_event_id "
+                "ON messages (source_event_id)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_messages_unread_sent_at_id "
+                "ON messages (sent_at, id) WHERE is_read = 0"
+            )
+        )

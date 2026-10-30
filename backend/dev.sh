@@ -5,11 +5,15 @@ ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RUN_DIR="$ROOT_DIR/run"
 VENV_PYTHON="$ROOT_DIR/.venv/bin/python"
 ENV_FILE="$ROOT_DIR/.env.dingtalk"
+FRPC_BIN="${FRPC_BIN:-frpc}"
+FRPC_CONFIG_FILE="${FRPC_CONFIG_FILE:-$ROOT_DIR/frpc.toml}"
 API_PID_FILE="$RUN_DIR/api.pid"
 WORKER_PID_FILE="$RUN_DIR/worker.pid"
+FRPC_PID_FILE="$RUN_DIR/frpc.pid"
 API_LOG_FILE="$RUN_DIR/api.log"
 WORKER_LOG_FILE="$RUN_DIR/worker.log"
-API_PORT=8000
+FRPC_LOG_FILE="$RUN_DIR/frpc.log"
+API_PORT=8003
 
 mkdir -p "$RUN_DIR"
 
@@ -41,11 +45,29 @@ require_file() {
   fi
 }
 
+require_command() {
+  local name="$1"
+  if ! command -v "$name" >/dev/null 2>&1; then
+    echo "Missing command: $name" >&2
+    exit 1
+  fi
+}
+
 ensure_ready() {
   require_file "$VENV_PYTHON" "virtualenv python"
   require_file "$ENV_FILE" "config file"
+  require_file "$FRPC_CONFIG_FILE" "frpc config file"
+  require_command "$FRPC_BIN"
   cleanup_pid_file "$API_PID_FILE"
   cleanup_pid_file "$WORKER_PID_FILE"
+  cleanup_pid_file "$FRPC_PID_FILE"
+}
+
+verify_frpc_config() {
+  if ! "$FRPC_BIN" verify -c "$FRPC_CONFIG_FILE" >/dev/null 2>&1; then
+    echo "Invalid frpc config: $FRPC_CONFIG_FILE" >&2
+    return 1
+  fi
 }
 
 check_port() {
@@ -71,7 +93,7 @@ start_api() {
   sleep 1
   if ! is_running "$API_PID_FILE"; then
     echo "Failed to start API. Check $API_LOG_FILE" >&2
-    exit 1
+    return 1
   fi
   echo "API started (pid $(cat "$API_PID_FILE"))."
 }
@@ -90,9 +112,28 @@ start_worker() {
   sleep 1
   if ! is_running "$WORKER_PID_FILE"; then
     echo "Failed to start worker. Check $WORKER_LOG_FILE" >&2
-    exit 1
+    return 1
   fi
   echo "Worker started (pid $(cat "$WORKER_PID_FILE"))."
+}
+
+start_frpc() {
+  if is_running "$FRPC_PID_FILE"; then
+    echo "FRPC already running (pid $(cat "$FRPC_PID_FILE"))."
+    return 0
+  fi
+
+  (
+    cd "$ROOT_DIR"
+    NO_PROXY='*' no_proxy='*' "$FRPC_BIN" -c "$FRPC_CONFIG_FILE" >>"$FRPC_LOG_FILE" 2>&1
+  ) &
+  echo $! > "$FRPC_PID_FILE"
+  sleep 1
+  if ! is_running "$FRPC_PID_FILE"; then
+    echo "Failed to start FRPC. Check $FRPC_LOG_FILE" >&2
+    return 1
+  fi
+  echo "FRPC started (pid $(cat "$FRPC_PID_FILE"))."
 }
 
 stop_one() {
@@ -114,9 +155,16 @@ stop_one() {
   echo "$name stopped."
 }
 
+rollback_startup() {
+  stop_one "frpc" "$FRPC_PID_FILE" >/dev/null 2>&1 || true
+  stop_one "worker" "$WORKER_PID_FILE" >/dev/null 2>&1 || true
+  stop_one "api" "$API_PID_FILE" >/dev/null 2>&1 || true
+}
+
 show_status() {
   cleanup_pid_file "$API_PID_FILE"
   cleanup_pid_file "$WORKER_PID_FILE"
+  cleanup_pid_file "$FRPC_PID_FILE"
 
   if is_running "$API_PID_FILE"; then
     echo "api: running (pid $(cat "$API_PID_FILE")) log=$API_LOG_FILE"
@@ -128,6 +176,12 @@ show_status() {
     echo "worker: running (pid $(cat "$WORKER_PID_FILE")) log=$WORKER_LOG_FILE"
   else
     echo "worker: stopped"
+  fi
+
+  if is_running "$FRPC_PID_FILE"; then
+    echo "frpc: running (pid $(cat "$FRPC_PID_FILE")) log=$FRPC_LOG_FILE"
+  else
+    echo "frpc: stopped"
   fi
 }
 
@@ -141,9 +195,13 @@ show_logs() {
       touch "$WORKER_LOG_FILE"
       tail -f "$WORKER_LOG_FILE"
       ;;
+    frpc)
+      touch "$FRPC_LOG_FILE"
+      tail -f "$FRPC_LOG_FILE"
+      ;;
     all)
-      touch "$API_LOG_FILE" "$WORKER_LOG_FILE"
-      tail -f "$API_LOG_FILE" "$WORKER_LOG_FILE"
+      touch "$API_LOG_FILE" "$WORKER_LOG_FILE" "$FRPC_LOG_FILE"
+      tail -f "$API_LOG_FILE" "$WORKER_LOG_FILE" "$FRPC_LOG_FILE"
       ;;
     *)
       echo "Unknown logs target: $log_target" >&2
@@ -156,11 +214,20 @@ case "$command_name" in
   start)
     ensure_ready
     check_port
-    start_api
-    start_worker
+    verify_frpc_config || exit 1
+    start_api || exit 1
+    start_worker || {
+      rollback_startup
+      exit 1
+    }
+    start_frpc || {
+      rollback_startup
+      exit 1
+    }
     show_status
     ;;
   stop)
+    stop_one "frpc" "$FRPC_PID_FILE"
     stop_one "worker" "$WORKER_PID_FILE"
     stop_one "api" "$API_PID_FILE"
     ;;
@@ -175,7 +242,7 @@ case "$command_name" in
     show_logs
     ;;
   *)
-    echo "Usage: backend/dev.sh [start|stop|restart|status|logs [api|worker]]" >&2
+    echo "Usage: backend/dev.sh [start|stop|restart|status|logs [api|worker|frpc]]" >&2
     exit 1
     ;;
 esac

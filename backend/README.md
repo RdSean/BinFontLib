@@ -42,14 +42,32 @@ cd backend
 ./dev.sh logs
 ./dev.sh logs api
 ./dev.sh logs worker
+./dev.sh logs frpc
 ```
 
 Notes:
 
 - No argument defaults to `start`
 - Runtime files are stored under `backend/run/`
-- The script expects `.venv` and `.env.dingtalk`
+- The script expects `.venv`, `.env.dingtalk`, `frpc`, and `frpc.toml`
 - The worker is started with `NO_PROXY='*'` to avoid local proxy interference with DingTalk Stream
+- The API is exposed through `frpc` using the TCP proxy defined in `backend/frpc.toml`
+
+## FRPC Config
+
+Start by editing `backend/frpc.toml` and filling in your real FRPS values:
+
+- `serverAddr`
+- `serverPort`
+- `auth.token`
+- `proxies[].remotePort`
+
+You can verify the config locally before startup:
+
+```bash
+cd backend
+frpc verify -c frpc.toml
+```
 
 ## Health Check
 

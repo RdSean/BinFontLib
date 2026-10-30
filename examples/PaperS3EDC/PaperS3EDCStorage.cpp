@@ -78,6 +78,9 @@ bool PaperS3EDCStorage::loadConfig(DeviceConfig& config) {
 
 bool PaperS3EDCStorage::saveConfig(const DeviceConfig& config) {
     if (!_filesystem) return false;
+    if (_filesystem->exists(kConfigPath)) {
+        _filesystem->remove(kConfigPath);
+    }
     File file = _filesystem->open(kConfigPath, FILE_WRITE);
     if (!file) return false;
     file.println("EDC_CONFIG_V1");
@@ -123,11 +126,6 @@ bool PaperS3EDCStorage::loadState(AppState& state) {
             state.pollIntervalBatterySec = line.substring(22).toInt();
         } else if (line.startsWith("messagePageIndex=")) {
             state.messagePage.currentPageIndex = std::max(0, static_cast<int>(line.substring(17).toInt()));
-        } else if (line.startsWith("cursor=")) {
-            copyText(state.lastMessageCursor, sizeof(state.lastMessageCursor), line.substring(7).c_str());
-            if (!strchr(state.lastMessageCursor, 'T')) {
-                state.lastMessageCursor[0] = '\0';
-            }
         } else if (line.startsWith("task|")) {
             if (state.taskCount >= kMaxTasks) continue;
             TaskItem& task = state.tasks[state.taskCount++];
@@ -169,6 +167,9 @@ bool PaperS3EDCStorage::loadState(AppState& state) {
 
 bool PaperS3EDCStorage::saveState(const AppState& state) {
     if (!_filesystem) return false;
+    if (_filesystem->exists(kStatePath)) {
+        _filesystem->remove(kStatePath);
+    }
     File file = _filesystem->open(kStatePath, FILE_WRITE);
     if (!file) return false;
     file.println(kStateVersion);
@@ -177,7 +178,6 @@ bool PaperS3EDCStorage::saveState(const AppState& state) {
     file.printf("pollIntervalChargingSec=%u\n", state.pollIntervalChargingSec);
     file.printf("pollIntervalBatterySec=%u\n", state.pollIntervalBatterySec);
     file.printf("messagePageIndex=%d\n", state.messagePage.currentPageIndex);
-    file.printf("cursor=%s\n", state.lastMessageCursor);
     for (size_t index = 0; index < state.taskCount; ++index) {
         const TaskItem& task = state.tasks[index];
         file.printf("task|%u|%u|%u|%u|%s\n",

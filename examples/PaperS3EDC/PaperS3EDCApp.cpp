@@ -10,6 +10,7 @@
 #include "PaperS3EDCFontManager.h"
 #include "PaperS3EDCLayout.h"
 #include "PaperS3EDCModel.h"
+#include "PaperS3EDCPollPolicy.h"
 #include "PaperS3EDCRenderer.h"
 #include "PaperS3EDCStorage.h"
 #include "PaperS3EDCSync.h"
@@ -59,6 +60,7 @@ private:
     void refreshCounts();
     void setStatus(const char* line, const char* detail);
     void renderCurrentPage(RefreshMode mode);
+    bool consumePartialRefreshBudget();
     void showPage(AppPage page);
     void handleTouch(int x, int y);
     void handleFooterTouch(int x, int y);
@@ -68,6 +70,8 @@ private:
     void removeLastPasswordChar();
     void persistState();
     void persistConfig();
+    void clearMessageCache();
+    void softPowerOff();
     void connectConfiguredWifi();
     void runManualSync();
     void maybePollMessages(uint32_t now);
@@ -114,6 +118,15 @@ void PaperS3EDCController::renderCurrentPage(RefreshMode mode) {
         }
     }
     _renderer.render(_state, effectiveMode);
+}
+
+bool PaperS3EDCController::consumePartialRefreshBudget() {
+    ++_state.partialRefreshCount;
+    if (_state.partialRefreshCount >= kPartialRefreshThreshold) {
+        _state.partialRefreshCount = 0;
+        return false;
+    }
+    return true;
 }
 
 void PaperS3EDCController::mountStorage() {
@@ -167,7 +180,6 @@ void PaperS3EDCController::seedFakeState() {
         copyText(_state.messages[index].source, sizeof(_state.messages[index].source), messages[index].source);
         _state.messages[index].read = messages[index].read;
     }
-    _state.lastMessageCursor[0] = '\0';
     _state.summary.totalPoints = 42;
     _state.summary.streakDays = 6;
     for (size_t index = 0; index < kContributionCellCount; ++index) {
@@ -204,6 +216,23 @@ void PaperS3EDCController::persistState() {
 void PaperS3EDCController::persistConfig() {
     if (!_state.littleFsReady) return;
     _storage.saveConfig(_state.config);
+}
+
+void PaperS3EDCController::clearMessageCache() {
+    _state.messageCount = 0;
+    for (size_t index = 0; index < kMaxMessages; ++index) {
+        _state.messages[index] = MessageItem{};
+    }
+    _state.messagePage.currentPageIndex = 0;
+    Serial.printf("[messages] cleared count=%u page=%d\n",
+                  static_cast<unsigned>(_state.messageCount),
+                  _state.messagePage.currentPageIndex);
+}
+
+void PaperS3EDCController::softPowerOff() {
+    _renderer.renderPowerOffSplash();
+    delay(250);
+    M5.Power.powerOff();
 }
 
 void PaperS3EDCController::scanWifiNetworks() {
@@ -283,6 +312,8 @@ void PaperS3EDCController::connectConfiguredWifi() {
 }
 
 void PaperS3EDCController::runManualSync() {
+    const AppPage previousPage = _state.currentPage;
+    const size_t previousMessageCount = _state.messageCount;
     const bool pushed = _sync.pushPendingEvents(_state);
     const bool pulled = _sync.pullTodayTasks(_state);
     const bool pulledMessages = _sync.pullMessages(_state, kRelayDeviceId);
@@ -293,10 +324,20 @@ void PaperS3EDCController::runManualSync() {
         _state.messagePage.currentPageIndex = std::max(0, _renderer.messagePageCount(_state) - 1);
     }
 
-    if (pushed || pulled || pulledMessages) {
+    const bool messageSyncStateChanged = previousMessageCount != _state.messageCount;
+
+    if (pushed || pulled || pulledMessages || messageSyncStateChanged) {
         persistState();
         persistConfig();
         _lastMessagePollMs = millis();
+    }
+
+    if (pulledMessages && _state.currentPage == AppPage::Messages) {
+        if (consumePartialRefreshBudget() && _renderer.renderMessageAppendFast(previousPage, previousMessageCount, _state)) {
+            // Fast partial append handled.
+        } else {
+            renderCurrentPage(RefreshMode::MessageAppend);
+        }
     }
 
     if (pushed && pulled && pulledMessages) {
@@ -323,13 +364,22 @@ void PaperS3EDCController::maybePollMessages(uint32_t now) {
         return;
     }
 
+    const AppPage previousPage = _state.currentPage;
+    const size_t previousMessageCount = _state.messageCount;
     if (_sync.pullMessages(_state, kRelayDeviceId)) {
         _state.messagePage.currentPageIndex = std::max(0, _renderer.messagePageCount(_state) - 1);
         persistState();
         persistConfig();
         if (_state.currentPage == AppPage::Messages) {
-            renderCurrentPage(RefreshMode::MessageAppend);
+            if (consumePartialRefreshBudget() && _renderer.renderMessageAppendFast(previousPage, previousMessageCount, _state)) {
+                // Fast partial append handled.
+            } else {
+                renderCurrentPage(RefreshMode::MessageAppend);
+            }
         }
+    } else if (previousMessageCount != _state.messageCount) {
+        persistState();
+        persistConfig();
     }
     _lastMessagePollMs = now;
 }
@@ -385,6 +435,10 @@ void PaperS3EDCController::showPage(AppPage page) {
     _state.currentPage = page;
     if (_state.currentPage == AppPage::Messages) {
         _state.messagePage.currentPageIndex = _renderer.clampMessagePageIndex(_state, _state.messagePage.currentPageIndex);
+        Serial.printf("[messages] show page count=%u current=%d total=%d\n",
+                      static_cast<unsigned>(_state.messageCount),
+                      _state.messagePage.currentPageIndex,
+                      _renderer.messagePageCount(_state));
     }
     renderCurrentPage(RefreshMode::Full);
 }
@@ -482,6 +536,7 @@ void PaperS3EDCController::handleTouch(int x, int y) {
             return;
         }
 
+        const int previousPageIndex = _state.messagePage.currentPageIndex;
         const int midpointX = _layout.padding + ((_layout.width - _layout.padding * 2) / 2);
         if (x < midpointX) {
             _state.messagePage.currentPageIndex = _renderer.clampMessagePageIndex(_state, _state.messagePage.currentPageIndex - 1);
@@ -491,12 +546,16 @@ void PaperS3EDCController::handleTouch(int x, int y) {
             setStatus("消息", "下一页");
         }
         persistState();
-        renderCurrentPage(RefreshMode::MessagePage);
+        if (previousPageIndex != _state.messagePage.currentPageIndex && consumePartialRefreshBudget()) {
+            _renderer.renderMessagePageFast(_state);
+        } else {
+            renderCurrentPage(RefreshMode::MessagePage);
+        }
         return;
     }
 
     if (_state.currentPage == AppPage::Settings) {
-        for (int index = 0; index < 6; ++index) {
+        for (int index = 0; index < 9; ++index) {
             RectBox row = _layout.settingsRowRect(index);
             if (!row.contains(x, y)) {
                 continue;
@@ -523,9 +582,48 @@ void PaperS3EDCController::handleTouch(int x, int y) {
             } else if (index == 4) {
                 runManualSync();
                 showPage(AppPage::SyncStatus);
+            } else if (index == 5) {
+                showPage(AppPage::RefreshLab);
+            } else if (index == 6) {
+                clearMessageCache();
+                persistState();
+                _state.partialRefreshCount = 0;
+                setStatus("消息已清空", "本地缓存已重置");
+                showPage(AppPage::Settings);
+            } else if (index == 7) {
+                softPowerOff();
+                return;
             } else {
                 showPage(AppPage::Today);
             }
+            return;
+        }
+        return;
+    }
+
+    if (_state.currentPage == AppPage::RefreshLab) {
+        if (_renderer.refreshLabStatusRect().contains(x, y)) {
+            ++_state.refreshLab.statusCounter;
+            setStatus("刷新实验", "顶部区域局刷");
+            _renderer.runRefreshLabStatusTest(_state);
+            return;
+        }
+        if (_renderer.refreshLabBodyRect().contains(x, y)) {
+            ++_state.refreshLab.bodyCounter;
+            setStatus("刷新实验", "正文区域局刷");
+            _renderer.runRefreshLabBodyTest(_state);
+            return;
+        }
+        if (_renderer.refreshLabToggleRect().contains(x, y)) {
+            _state.refreshLab.drawPath = (_state.refreshLab.drawPath == RefreshLabDrawPath::Direct)
+                                           ? RefreshLabDrawPath::Canvas
+                                           : RefreshLabDrawPath::Direct;
+            setStatus("刷新实验", _state.refreshLab.drawPath == RefreshLabDrawPath::Direct ? "Direct" : "Canvas");
+            showPage(AppPage::RefreshLab);
+            return;
+        }
+        if (_renderer.refreshLabBackRect().contains(x, y)) {
+            showPage(AppPage::Settings);
             return;
         }
         return;
@@ -572,6 +670,9 @@ void PaperS3EDCController::begin() {
     if (_state.littleFsReady) {
         _storage.loadConfig(_state.config);
         if (_storage.loadState(_state)) {
+            if (normalizePollIntervals(_state.pollIntervalChargingSec, _state.pollIntervalBatterySec)) {
+                _storage.saveState(_state);
+            }
             refreshDateAndPower();
             refreshCounts();
             _state.messagePage.currentPageIndex = _renderer.clampMessagePageIndex(_state, _state.messagePage.currentPageIndex);

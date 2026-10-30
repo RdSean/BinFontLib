@@ -5,8 +5,14 @@ from datetime import datetime, timezone
 import pytest
 
 from app.db import Base, get_engine, get_db_session
-from app.models import Message
-from app.services.message_service import MessageInput, list_messages_after, save_message
+from app.services.message_service import (
+    MessageInput,
+    list_all_messages,
+    list_messages_after,
+    list_unread_messages,
+    mark_messages_read,
+    save_message,
+)
 
 
 @pytest.fixture()
@@ -67,3 +73,97 @@ def test_list_messages_after_returns_newer_messages(temp_db):
         messages = list_messages_after(session, after_id=1, limit=10)
 
     assert [item.id for item in messages] == [second.id]
+
+
+def test_message_defaults_to_unread(temp_db):
+    with get_db_session() as session:
+        message = save_message(
+            session,
+            MessageInput(
+                source_event_id="evt-100",
+                source_type="dingtalk",
+                title="第一条",
+                body="A",
+                sent_at=datetime(2026, 4, 8, 10, 0, tzinfo=timezone.utc),
+            ),
+        )
+        session.commit()
+
+    assert message.is_read is False
+
+
+def test_unread_query_returns_oldest_first_and_can_mark_batch_read(temp_db):
+    with get_db_session() as session:
+        first = save_message(
+            session,
+            MessageInput(
+                source_event_id="evt-101",
+                source_type="dingtalk",
+                title="第一条",
+                body="A",
+                sent_at=datetime(2026, 4, 8, 10, 0, tzinfo=timezone.utc),
+            ),
+        )
+        second = save_message(
+            session,
+            MessageInput(
+                source_event_id="evt-102",
+                source_type="dingtalk",
+                title="第二条",
+                body="B",
+                sent_at=datetime(2026, 4, 8, 10, 1, tzinfo=timezone.utc),
+            ),
+        )
+        session.commit()
+
+    with get_db_session() as session:
+        unread = list_unread_messages(session, limit=10)
+        assert [item.id for item in unread] == [first.id, second.id]
+        assert [item.is_read for item in unread] == [False, False]
+        mark_messages_read(session, unread)
+        session.commit()
+
+    with get_db_session() as session:
+        unread = list_unread_messages(session, limit=10)
+        assert unread == []
+
+
+def test_all_query_returns_newest_first_without_changing_read_state(temp_db):
+    with get_db_session() as session:
+        first = save_message(
+            session,
+            MessageInput(
+                source_event_id="evt-201",
+                source_type="dingtalk",
+                title="第一条",
+                body="A",
+                sent_at=datetime(2026, 4, 8, 11, 0, tzinfo=timezone.utc),
+            ),
+        )
+        second = save_message(
+            session,
+            MessageInput(
+                source_event_id="evt-202",
+                source_type="dingtalk",
+                title="第二条",
+                body="B",
+                sent_at=datetime(2026, 4, 8, 11, 1, tzinfo=timezone.utc),
+            ),
+        )
+        third = save_message(
+            session,
+            MessageInput(
+                source_event_id="evt-203",
+                source_type="dingtalk",
+                title="第三条",
+                body="C",
+                sent_at=datetime(2026, 4, 8, 11, 2, tzinfo=timezone.utc),
+            ),
+        )
+        mark_messages_read(session, [first])
+        session.commit()
+
+    with get_db_session() as session:
+        all_messages = list_all_messages(session, limit=10)
+        assert [item.id for item in all_messages] == [third.id, second.id, first.id]
+        assert [item.is_read for item in all_messages] == [False, False, True]

@@ -22,11 +22,11 @@ constexpr RemoteTaskSeed kRemoteTasks[] = {
     {106, "睡前复盘今天收获", 2},
 };
 
-constexpr const char* kMessageBackendBaseUrl = "http://101.133.156.85:51008";
+constexpr const char* kMessageBackendBaseUrl = "http://101.133.156.85:51007";
 constexpr const char* kMessageDeviceEndpoint = "/api/device/messages";
 constexpr const char* kMessageDeviceToken = "paper-s3-local-token";
 constexpr const char* kMessageSource = "dingtalk";
-constexpr uint8_t kMessageRequestLimit = 8;
+constexpr uint8_t kMessageRequestLimit = kMaxMessages < 16 ? kMaxMessages : 16;
 constexpr size_t kMessageJsonCapacity = 8192;
 
 void copyText(char* dest, size_t capacity, const char* src) {
@@ -55,14 +55,6 @@ int findMessageIndex(const AppState& state, const char* messageId) {
         }
     }
     return -1;
-}
-
-bool isValidTimestampCursor(const char* cursor) {
-    if (!cursor || cursor[0] == '\0') {
-        return false;
-    }
-    const size_t length = strlen(cursor);
-    return length >= 20 && strchr(cursor, 'T') != nullptr && cursor[length - 1] == 'Z';
 }
 
 void copyBackendMessage(MessageItem& item, JsonObjectConst message) {
@@ -163,19 +155,21 @@ bool PaperS3EDCSyncService::pullMessages(AppState& state, const char* deviceId) 
 
     state.syncState = SyncState::Pending;
     const char* resolvedDeviceId = (deviceId && deviceId[0]) ? deviceId : "papers3-demo";
-    if (!isValidTimestampCursor(state.lastMessageCursor)) {
-        state.lastMessageCursor[0] = '\0';
+    const size_t freeSlots = (state.messageCount < kMaxMessages) ? (kMaxMessages - state.messageCount) : 0;
+    const size_t requestLimit = std::min<size_t>(kMessageRequestLimit, std::max<size_t>(freeSlots, 1));
+    if (requestLimit == 0) {
+        state.syncState = SyncState::Success;
+        snprintf(state.statusLine, sizeof(state.statusLine), "%s", "消息缓存已满");
+        snprintf(state.statusDetail, sizeof(state.statusDetail), "%s", "等待翻页或清空缓存");
+        return false;
     }
-    const char* sinceTs = state.lastMessageCursor;
+
+    bool changed = false;
     String requestUrl = String(kMessageBackendBaseUrl) + kMessageDeviceEndpoint;
     requestUrl += "?device_id=";
     requestUrl += resolvedDeviceId;
-    if (sinceTs[0] != '\0') {
-        requestUrl += "&since_ts=";
-        requestUrl += sinceTs;
-    }
     requestUrl += "&limit=";
-    requestUrl += String(kMessageRequestLimit);
+    requestUrl += String(requestLimit);
     Serial.printf("[relay] GET %s\n", requestUrl.c_str());
 
     HTTPClient http;
@@ -207,14 +201,14 @@ bool PaperS3EDCSyncService::pullMessages(AppState& state, const char* deviceId) 
         return false;
     }
 
-    if (!document["messages"].is<JsonArray>() || !document["next_cursor"].is<const char*>() || !document["has_more"].is<bool>()) {
+    if (!document["messages"].is<JsonArray>() || !document["has_more"].is<bool>()) {
         state.syncState = SyncState::Failed;
         snprintf(state.statusLine, sizeof(state.statusLine), "%s", "接口返回异常");
         snprintf(state.statusDetail, sizeof(state.statusDetail), "%s", "消息字段不完整");
         return false;
     }
 
-    bool changed = false;
+    const bool hasMore = document["has_more"] | false;
     JsonArrayConst messages = document["messages"].as<JsonArrayConst>();
     for (JsonObjectConst remote : messages) {
         MessageItem item{};
@@ -225,22 +219,14 @@ bool PaperS3EDCSyncService::pullMessages(AppState& state, const char* deviceId) 
         }
     }
 
-    const char* nextCursor = document["next_cursor"] | "";
-    const bool hasMore = document["has_more"] | false;
-    if (isValidTimestampCursor(nextCursor)) {
-        copyText(state.lastMessageCursor, sizeof(state.lastMessageCursor), nextCursor);
-    } else {
-        state.lastMessageCursor[0] = '\0';
-    }
-
     state.syncState = SyncState::Success;
     if (changed) {
         copyText(state.config.lastSyncLabel, sizeof(state.config.lastSyncLabel), "消息已刷新");
         snprintf(state.statusLine, sizeof(state.statusLine), "%s", "消息已更新");
-        snprintf(state.statusDetail, sizeof(state.statusDetail), "%s", hasMore ? "仍有更多消息" : "已完成本轮拉取");
+        snprintf(state.statusDetail, sizeof(state.statusDetail), "%s", hasMore ? "仍有更多未读消息" : "已完成本轮拉取");
     } else {
         snprintf(state.statusLine, sizeof(state.statusLine), "%s", "消息无更新");
-        snprintf(state.statusDetail, sizeof(state.statusDetail), "%s", hasMore ? "等待继续拉取" : "当前已经最新");
+        snprintf(state.statusDetail, sizeof(state.statusDetail), "%s", hasMore ? "仍有未读消息待取" : "当前已经最新");
     }
     return changed;
 }

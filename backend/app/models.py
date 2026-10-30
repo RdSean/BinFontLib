@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import Index, Integer, String, Text
+from sqlalchemy import Boolean, Index, Integer, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
 
@@ -44,7 +44,15 @@ class UTCDateTime(TypeDecorator[str]):
 
 class Message(Base):
     __tablename__ = "messages"
-    __table_args__ = (Index("ix_messages_source_event_id", "source_event_id", unique=True),)
+    __table_args__ = (
+        Index("ix_messages_source_event_id", "source_event_id", unique=True),
+        Index(
+            "ix_messages_unread_sent_at_id",
+            "sent_at",
+            "id",
+            sqlite_where=text("is_read = 0"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     source_event_id: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -52,6 +60,7 @@ class Message(Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
     sent_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    is_read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("0"))
     raw_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime(),

@@ -25,10 +25,13 @@ constexpr int kStatusIconSize = 18;
 constexpr int kStatusSyncSlotWidth = 24;
 constexpr int kStatusTaskSlotWidth = 40;
 constexpr int kStatusBatteryWidth = 30;
-constexpr int kMessageTimeColumnWidth = 52;
-constexpr int kMessageTimeGap = 10;
+constexpr int kMessageTimeColumnWidth = 56;
+constexpr int kMessageTimeGap = 8;
+constexpr int kMessageTimeRightInset = 14;
 constexpr const char* kTabLabels[] = {"今日", "成长", "消息", "配置"};
-constexpr int kSettingsRowCount = 6;
+constexpr const char* kPowerOffLine1 = "压反应釜冷却至 40°C";
+constexpr const char* kPowerOffLine2 = "气相回路压力归零";
+constexpr int kSettingsRowCount = 9;
 constexpr const char* kWeekdayCn[] = {"星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"};
 
 bool sameText(const char* left, const char* right) {
@@ -91,6 +94,7 @@ const char* pageTitle(AppPage page) {
         case AppPage::Progress: return "成长进度";
         case AppPage::Messages: return "消息";
         case AppPage::Settings: return "设备配置";
+        case AppPage::RefreshLab: return "刷新实验";
         case AppPage::WifiList: return "选择网络";
         case AppPage::WifiPassword: return "输入密码";
         case AppPage::SyncStatus: return "同步结果";
@@ -125,6 +129,15 @@ const char* epdModeLabel(EpdRefreshMode mode) {
     }
 }
 
+const char* refreshLabDrawPathLabel(RefreshLabDrawPath path) {
+    switch (path) {
+        case RefreshLabDrawPath::Canvas: return "Canvas";
+        case RefreshLabDrawPath::Direct:
+        default:
+            return "Direct";
+    }
+}
+
 epd_mode_t epdModeValue(EpdRefreshMode mode) {
     switch (mode) {
         case EpdRefreshMode::Fast: return epd_mode_t::epd_fast;
@@ -134,6 +147,51 @@ epd_mode_t epdModeValue(EpdRefreshMode mode) {
         default:
             return epd_mode_t::epd_text;
     }
+}
+
+RectBox toPanelRegion(lgfx::LGFXBase* display, const RectBox& logicalRegion) {
+    if (!display) {
+        return logicalRegion;
+    }
+
+    auto panel = M5.Display.panel();
+    if (!panel) {
+        return logicalRegion;
+    }
+
+    const auto cfg = panel->config();
+    uint_fast8_t rotation = display->getRotation() & 7;
+    uint_fast8_t internalRotation = ((rotation + cfg.offset_rotation) & 3) | ((rotation & 4) ^ (cfg.offset_rotation & 4));
+
+    uint_fast16_t xs = logicalRegion.x;
+    uint_fast16_t ys = logicalRegion.y;
+    uint_fast16_t xe = logicalRegion.x + logicalRegion.w - 1;
+    uint_fast16_t ye = logicalRegion.y + logicalRegion.h - 1;
+
+    if (internalRotation) {
+        if (internalRotation & 1) {
+            std::swap(xs, ys);
+            std::swap(xe, ye);
+        }
+        uint_fast8_t rb = 1 << internalRotation;
+        if (rb & 0b11000110) {
+            std::swap(xs, xe);
+            xs = cfg.panel_width - 1 - xs;
+            xe = cfg.panel_width - 1 - xe;
+        }
+        if (rb & 0b10011100) {
+            std::swap(ys, ye);
+            ys = cfg.panel_height - 1 - ys;
+            ye = cfg.panel_height - 1 - ye;
+        }
+    }
+
+    return RectBox{
+        static_cast<int>(std::min(xs, xe)),
+        static_cast<int>(std::min(ys, ye)),
+        static_cast<int>(std::max(xs, xe) - std::min(xs, xe) + 1),
+        static_cast<int>(std::max(ys, ye) - std::min(ys, ye) + 1),
+    };
 }
 }  // namespace
 
@@ -163,7 +221,31 @@ void PaperS3EDCRenderer::displayFrame(EpdRefreshMode mode) {
 
 void PaperS3EDCRenderer::displayRegion(const RectBox& region, EpdRefreshMode mode) {
     applyEpdMode(mode);
-    _display->display(region.x, region.y, region.w, region.h);
+    const RectBox panelRegion = toPanelRegion(_display, region);
+    _display->display(panelRegion.x, panelRegion.y, panelRegion.w, panelRegion.h);
+}
+
+void PaperS3EDCRenderer::redrawStatusBarToBuffer(const AppState& state) {
+    const RectBox statusRegion = statusBarRegion();
+    _display->fillRect(statusRegion.x, statusRegion.y, statusRegion.w, statusRegion.h, TFT_WHITE);
+    drawStatusBar(state);
+}
+
+void PaperS3EDCRenderer::redrawMessageViewportToBuffer(const AppState& state) {
+    const RectBox viewport = messageViewportRegion();
+    _display->fillRect(viewport.x, viewport.y, viewport.w, viewport.h, TFT_WHITE);
+    drawMessagesPage(state);
+}
+
+void PaperS3EDCRenderer::renderStatusBarFast(const AppState& state) {
+    redrawStatusBarToBuffer(state);
+    displayRegion(statusBarRegion(), EpdRefreshMode::Fast);
+}
+
+void PaperS3EDCRenderer::renderMessagePageFast(const AppState& state) {
+    redrawMessageViewportToBuffer(state);
+    displayRegion(messageViewportRegion(), EpdRefreshMode::Fast);
+    renderStatusBarFast(state);
 }
 
 RectBox PaperS3EDCRenderer::statusBarRegion() const {
@@ -178,6 +260,22 @@ RectBox PaperS3EDCRenderer::footerRegion() const {
     return RectBox{0, _layout.footerTop, _width, _layout.height - _layout.footerTop};
 }
 
+RectBox PaperS3EDCRenderer::refreshLabStatusRect() const {
+    return RectBox{_layout.padding, _layout.bodyTop + 68, _width - _layout.padding * 2, 76};
+}
+
+RectBox PaperS3EDCRenderer::refreshLabBodyRect() const {
+    return RectBox{_layout.padding, _layout.bodyTop + 164, _width - _layout.padding * 2, 210};
+}
+
+RectBox PaperS3EDCRenderer::refreshLabToggleRect() const {
+    return RectBox{_layout.padding, _layout.bodyTop + 392, _width - _layout.padding * 2, 42};
+}
+
+RectBox PaperS3EDCRenderer::refreshLabBackRect() const {
+    return RectBox{_layout.padding, _layout.bodyTop + 444, _width - _layout.padding * 2, 42};
+}
+
 bool PaperS3EDCRenderer::ensureMessageViewportCanvas() {
     const RectBox viewport = messageViewportRegion();
     if (_messageViewportCanvas.width() == viewport.w && _messageViewportCanvas.height() == viewport.h && _messageViewportCanvas.getBuffer()) {
@@ -185,6 +283,164 @@ bool PaperS3EDCRenderer::ensureMessageViewportCanvas() {
     }
     _messageViewportCanvas.deleteSprite();
     return _messageViewportCanvas.createSprite(viewport.w, viewport.h);
+}
+
+bool PaperS3EDCRenderer::blitCanvasRegionToDisplay(M5Canvas& canvas, const RectBox& canvasRegion, const RectBox& displayRegion) {
+    if (canvasRegion.w <= 0 || canvasRegion.h <= 0 || displayRegion.w <= 0 || displayRegion.h <= 0) {
+        return false;
+    }
+    if (canvasRegion.w != displayRegion.w || canvasRegion.h != displayRegion.h) {
+        return false;
+    }
+
+    std::unique_ptr<uint16_t[]> pixels(new (std::nothrow) uint16_t[static_cast<size_t>(canvasRegion.w) * static_cast<size_t>(canvasRegion.h)]);
+    if (!pixels) {
+        return false;
+    }
+
+    canvas.readRect(canvasRegion.x, canvasRegion.y, canvasRegion.w, canvasRegion.h, pixels.get());
+    _display->pushImage(displayRegion.x, displayRegion.y, displayRegion.w, displayRegion.h, pixels.get());
+    return true;
+}
+
+RectBox PaperS3EDCRenderer::measureMessageContentRect(const AppState& state, size_t displayIndex, const MessageLayout& layout, int viewportTopOffset) const {
+    const MessageItem& item = messageForDisplay(state, displayIndex);
+    const int contentTop = layout.top + (layout.roundStart ? kMessageRoundGap : kMessageTopGap);
+    const int bodyWidth = std::max(24, layout.contentWidth - kMessageTimeColumnWidth - kMessageTimeGap - kMessageTimeRightInset);
+    const int timeX = layout.contentX + bodyWidth + kMessageTimeGap;
+    int bodyX = layout.contentX;
+    int left = bodyX;
+    int top = contentTop;
+    int bottom = contentTop;
+
+    if (!item.read) {
+        left = std::min(left, layout.contentX);
+        top = std::min(top, contentTop + 10);
+        bottom = std::max(bottom, contentTop + 18);
+        bodyX += 16;
+    }
+
+    const int bodyTextWidth = std::max(16, bodyWidth - (bodyX - layout.contentX));
+    const int bodyHeight = measureMessageTextHeight(item.body, bodyTextWidth, true);
+    const char* timeText = item.sent_at;
+    char timeLabel[8];
+    formatMessageTime(timeText, timeLabel, sizeof(timeLabel));
+    const int timeHeight = measureCompactTextHeight(timeLabel, kMessageTimeColumnWidth, false);
+
+    left = std::min(left, bodyX);
+    if (layout.roundStart) {
+        left = std::min(left, _layout.padding + (kMessageGutterWidth - kMessageMarkerWidth) / 2);
+        top = std::min(top, layout.top + kMessageRoundGap + 2);
+        bottom = std::max(bottom, layout.top + kMessageRoundGap + 2 + kMessageMarkerHeight);
+    }
+
+    top = std::min(top, contentTop);
+    bottom = std::max(bottom, contentTop + std::max(bodyHeight, timeHeight));
+    const int right = std::max(bodyX + bodyTextWidth, timeX + kMessageTimeColumnWidth);
+    return RectBox{left, viewportTopOffset + top, std::max(1, right - left), std::max(1, bottom - top)};
+}
+
+int PaperS3EDCRenderer::measureMessagePageCountForDisplayCount(const AppState& state, size_t displayCount) const {
+    if (displayCount == 0) {
+        return 0;
+    }
+
+    const int viewportHeight = _layout.bodyBottom - _layout.bodyTop;
+    int usedHeight = 0;
+    int pageCount = 1;
+    for (size_t displayIndex = 0; displayIndex < displayCount; ++displayIndex) {
+        const int itemHeight = measureMessageHeight(messageForDisplay(state, displayIndex), isMessageRoundStart(state, displayIndex));
+        const bool needNextPage = usedHeight > 0 && (usedHeight + itemHeight) > viewportHeight;
+        if (needNextPage) {
+            ++pageCount;
+            usedHeight = 0;
+        }
+        usedHeight += itemHeight;
+    }
+    return pageCount;
+}
+
+PaperS3EDCRenderer::MessageAppendRefreshPlan PaperS3EDCRenderer::measureMessageAppendRefreshPlan(AppPage previousPage, size_t previousMessageCount, const AppState& currentState) const {
+    MessageAppendRefreshPlan plan;
+    if (currentState.currentPage != AppPage::Messages || previousPage != AppPage::Messages) {
+        return plan;
+    }
+    if (currentState.messageCount <= previousMessageCount || currentState.messageCount == 0) {
+        return plan;
+    }
+
+    const MessagePageMetrics currentMetrics = measureMessagePageMetrics(currentState, currentState.messagePage.currentPageIndex);
+    if (currentMetrics.pageCount <= 0 || currentMetrics.currentPageIndex != (currentMetrics.pageCount - 1)) {
+        return plan;
+    }
+
+    const int previousPageCount = measureMessagePageCountForDisplayCount(currentState, previousMessageCount);
+    if (previousMessageCount > 0 && previousPageCount != currentMetrics.pageCount) {
+        return plan;
+    }
+
+    const int firstNewDisplayIndex = static_cast<int>(previousMessageCount);
+    if (firstNewDisplayIndex < currentMetrics.startDisplayIndex || firstNewDisplayIndex >= currentMetrics.endDisplayIndex) {
+        return plan;
+    }
+
+    const RectBox viewport = messageViewportRegion();
+    int cursorY = 0;
+    int left = viewport.x + viewport.w;
+    int top = viewport.y + viewport.h;
+    int right = viewport.x;
+    int bottom = viewport.y;
+
+    for (int displayIndex = currentMetrics.startDisplayIndex; displayIndex < currentMetrics.endDisplayIndex; ++displayIndex) {
+        const MessageLayout layout = measureMessageLayout(currentState, static_cast<size_t>(displayIndex), cursorY);
+        cursorY = layout.top + layout.height;
+        if (displayIndex < firstNewDisplayIndex) {
+            continue;
+        }
+        const RectBox contentRect = measureMessageContentRect(currentState, static_cast<size_t>(displayIndex), layout, viewport.y);
+        left = std::min(left, contentRect.x);
+        top = std::min(top, contentRect.y);
+        right = std::max(right, contentRect.x + contentRect.w);
+        bottom = std::max(bottom, contentRect.y + contentRect.h);
+    }
+
+    if (left >= right || top >= bottom) {
+        return plan;
+    }
+
+    plan.eligible = true;
+    plan.dirtyRegion = RectBox{
+        std::max(viewport.x, left),
+        std::max(viewport.y, top),
+        std::min(viewport.x + viewport.w, right) - std::max(viewport.x, left),
+        std::min(viewport.y + viewport.h, bottom) - std::max(viewport.y, top),
+    };
+    return plan;
+}
+
+bool PaperS3EDCRenderer::renderMessageAppendFast(AppPage previousPage, size_t previousMessageCount, const AppState& currentState) {
+    const MessageAppendRefreshPlan plan = measureMessageAppendRefreshPlan(previousPage, previousMessageCount, currentState);
+    if (!plan.eligible || plan.dirtyRegion.w <= 0 || plan.dirtyRegion.h <= 0) {
+        return false;
+    }
+    if (!ensureMessageViewportCanvas()) {
+        return false;
+    }
+
+    drawMessagesPageToCanvas(currentState, _messageViewportCanvas);
+    const RectBox viewport = messageViewportRegion();
+    const RectBox canvasRegion{
+        plan.dirtyRegion.x - viewport.x,
+        plan.dirtyRegion.y - viewport.y,
+        plan.dirtyRegion.w,
+        plan.dirtyRegion.h,
+    };
+    if (!blitCanvasRegionToDisplay(_messageViewportCanvas, canvasRegion, plan.dirtyRegion)) {
+        return false;
+    }
+    displayRegion(plan.dirtyRegion, EpdRefreshMode::Fast);
+    renderStatusBarFast(currentState);
+    return true;
 }
 
 void PaperS3EDCRenderer::drawUiText(const char* text, int x, int y, int width, int height, bool wrap) {
@@ -292,7 +548,7 @@ bool PaperS3EDCRenderer::isMessageRoundStart(const AppState& state, size_t displ
 
 int PaperS3EDCRenderer::measureMessageHeight(const MessageItem& item, bool roundStart) const {
     const int contentWidth = _width - _layout.padding * 2 - kMessageGutterWidth;
-    const int bodyWidth = std::max(24, contentWidth - kMessageTimeColumnWidth - kMessageTimeGap);
+    const int bodyWidth = std::max(24, contentWidth - kMessageTimeColumnWidth - kMessageTimeGap - kMessageTimeRightInset);
     const int bodyHeight = measureMessageTextHeight(item.body, bodyWidth, true);
     const int topGap = roundStart ? kMessageRoundGap : kMessageTopGap;
     return topGap + bodyHeight + kMessageBottomGap;
@@ -359,23 +615,17 @@ int PaperS3EDCRenderer::clampMessagePageIndex(const AppState& state, int request
 }
 
 void PaperS3EDCRenderer::render(const AppState& state, RefreshMode mode) {
-    const RectBox statusRegion = statusBarRegion();
-    const RectBox messageRegion = messageViewportRegion();
-
     switch (mode) {
         case RefreshMode::StatusOnly:
-            _display->fillRect(statusRegion.x, statusRegion.y, statusRegion.w, statusRegion.h, TFT_WHITE);
-            drawStatusBar(state);
-            displayFrame(state.config.epdRefreshMode);
+            redrawStatusBarToBuffer(state);
+            displayFrame(EpdRefreshMode::Fast);
             return;
         case RefreshMode::MessagePage:
         case RefreshMode::MessageAppend:
             if (state.currentPage == AppPage::Messages) {
-                _display->fillRect(statusRegion.x, statusRegion.y, statusRegion.w, statusRegion.h, TFT_WHITE);
-                _display->fillRect(messageRegion.x, messageRegion.y, messageRegion.w, messageRegion.h, TFT_WHITE);
-                drawStatusBar(state);
-                drawMessagesPage(state);
-                displayFrame(state.config.epdRefreshMode);
+                redrawStatusBarToBuffer(state);
+                redrawMessageViewportToBuffer(state);
+                displayFrame(EpdRefreshMode::Text);
                 return;
             }
             break;
@@ -391,12 +641,29 @@ void PaperS3EDCRenderer::render(const AppState& state, RefreshMode mode) {
         case AppPage::Progress: drawProgressPage(state); break;
         case AppPage::Messages: drawMessagesPage(state); break;
         case AppPage::Settings: drawSettingsPage(state); break;
+        case AppPage::RefreshLab: drawRefreshLabPage(state); break;
         case AppPage::WifiList: drawWifiListPage(state); break;
         case AppPage::WifiPassword: drawWifiPasswordPage(state); break;
         case AppPage::SyncStatus: drawSyncStatusPage(state); break;
     }
     drawBottomTabs(state);
-    displayFrame(state.config.epdRefreshMode);
+    displayFrame(EpdRefreshMode::Text);
+}
+
+void PaperS3EDCRenderer::renderPowerOffSplash() {
+    _display->fillScreen(TFT_WHITE);
+
+    const int contentWidth = _width - _layout.padding * 2;
+    const int lineGap = 22;
+    const int line1Height = std::max(40, measureMessageTextHeight(kPowerOffLine1, contentWidth, false));
+    const int line2Height = std::max(40, measureMessageTextHeight(kPowerOffLine2, contentWidth, false));
+    const int totalHeight = line1Height + lineGap + line2Height;
+    const int startY = std::max(0, (_height - totalHeight) / 2);
+
+    drawUiTextCentered(kPowerOffLine1, _layout.padding, startY, contentWidth, line1Height);
+    drawUiTextCentered(kPowerOffLine2, _layout.padding, startY + line1Height + lineGap, contentWidth, line2Height);
+
+    displayFrame(EpdRefreshMode::Quality);
 }
 
 void PaperS3EDCRenderer::drawStatusBar(const AppState& state) {
@@ -444,8 +711,6 @@ void PaperS3EDCRenderer::drawBottomTabs(const AppState& state) {
         drawUiTextCentered(kTabLabels[index], x, y + 10, buttonWidth, _layout.footerButtonHeight);
     }
     _display->setTextColor(TFT_BLACK, TFT_WHITE);
-    drawUiText(state.statusLine, _layout.padding, y + 46, (_width / 2) - _layout.padding - 8, 20, false);
-    drawUiText(state.statusDetail, _width / 2, y + 46, (_width / 2) - _layout.padding, 20, false);
 }
 
 void PaperS3EDCRenderer::drawTaskMarker(int x, int y, int w, int h, TaskStatus status, bool selected) {
@@ -573,7 +838,8 @@ void PaperS3EDCRenderer::drawProgressPage(const AppState& state) {
 
 void PaperS3EDCRenderer::drawMessagesPage(const AppState& state) {
     if (state.messageCount == 0) {
-        drawFallbackBodyMessage("暂无消息", "等待下一次拉取");
+        const RectBox viewport = messageViewportRegion();
+        _display->fillRect(viewport.x, viewport.y, viewport.w, viewport.h, TFT_WHITE);
         return;
     }
 
@@ -603,7 +869,7 @@ void PaperS3EDCRenderer::drawMessagesPage(const AppState& state) {
         }
 
         const int contentTop = layout.top + (layout.roundStart ? kMessageRoundGap : kMessageTopGap);
-        const int bodyWidth = std::max(24, layout.contentWidth - kMessageTimeColumnWidth - kMessageTimeGap);
+        const int bodyWidth = std::max(24, layout.contentWidth - kMessageTimeColumnWidth - kMessageTimeGap - kMessageTimeRightInset);
         const int timeX = layout.contentX + bodyWidth + kMessageTimeGap;
         int bodyX = layout.contentX;
         if (!item.read) {
@@ -649,7 +915,7 @@ void PaperS3EDCRenderer::drawMessagesPageToCanvas(const AppState& state, M5Canva
         }
 
         const int contentTop = layout.top + (layout.roundStart ? kMessageRoundGap : kMessageTopGap);
-        const int bodyWidth = std::max(24, layout.contentWidth - kMessageTimeColumnWidth - kMessageTimeGap);
+        const int bodyWidth = std::max(24, layout.contentWidth - kMessageTimeColumnWidth - kMessageTimeGap - kMessageTimeRightInset);
         const int timeX = layout.contentX + bodyWidth + kMessageTimeGap;
         int bodyX = layout.contentX;
         if (!item.read) {
@@ -700,59 +966,127 @@ void PaperS3EDCRenderer::drawSettingsPage(const AppState& state) {
             snprintf(line, sizeof(line), "Wi‑Fi 配置");
         } else if (index == 4) {
             snprintf(line, sizeof(line), "手动同步");
+        } else if (index == 5) {
+            snprintf(line, sizeof(line), "刷新实验");
+        } else if (index == 6) {
+            snprintf(line, sizeof(line), "清空消息缓存");
+        } else if (index == 7) {
+            snprintf(line, sizeof(line), "关机");
         } else {
             snprintf(line, sizeof(line), "返回今日");
         }
         drawUiText(line, _layout.padding + 14, y + 8, _width - _layout.padding * 2 - 28, 24, false);
         _display->setTextColor(TFT_BLACK, TFT_WHITE);
     }
+}
 
-    const size_t previewCount = _fonts ? _fonts->previewSlotCount() : 0;
-    const int diagTop = _layout.settingsRowRect(kSettingsRowCount - 1).y + 62;
-    const int diagHeight = std::max(168, _layout.bodyBottom - diagTop - 8);
-    _display->drawRect(_layout.padding, diagTop, _width - _layout.padding * 2, diagHeight, TFT_BLACK);
-    drawUiText("字体诊断", _layout.padding + 12, diagTop + 10, 160, 24, false);
+void PaperS3EDCRenderer::drawRefreshLabPage(const AppState& state) {
+    char line[96];
+    snprintf(line, sizeof(line), "模式：%s", epdModeLabel(state.config.epdRefreshMode));
+    drawUiText(line, _layout.padding, _layout.bodyTop, _width - _layout.padding * 2, 24, false);
+    snprintf(line, sizeof(line), "路径：%s", refreshLabDrawPathLabel(state.refreshLab.drawPath));
+    drawUiText(line, _layout.padding, _layout.bodyTop + 28, _width - _layout.padding * 2, 24, false);
 
-    if (!_fonts || previewCount == 0) {
-        drawUiText("诊断字体未就绪", _layout.padding + 12, diagTop + 40, _width - _layout.padding * 2 - 24, 22, false);
-        return;
+    RectBox statusRect = refreshLabStatusRect();
+    RectBox bodyRect = refreshLabBodyRect();
+    RectBox toggleRect = refreshLabToggleRect();
+    RectBox backRect = refreshLabBackRect();
+
+    _display->drawRect(statusRect.x, statusRect.y, statusRect.w, statusRect.h, TFT_BLACK);
+    snprintf(line, sizeof(line), "顶栏局刷测试 #%u", state.refreshLab.statusCounter);
+    drawUiText(line, statusRect.x + 14, statusRect.y + 10, statusRect.w - 28, 24, false);
+    drawUiText("点击这里：只刷新顶部小区域", statusRect.x + 14, statusRect.y + 38, statusRect.w - 28, 24, false);
+
+    _display->drawRect(bodyRect.x, bodyRect.y, bodyRect.w, bodyRect.h, TFT_BLACK);
+    snprintf(line, sizeof(line), "正文局刷测试 #%u", state.refreshLab.bodyCounter);
+    drawUiText(line, bodyRect.x + 14, bodyRect.y + 12, bodyRect.w - 28, 24, false);
+    drawUiText("点击这里：只刷新消息区大小的矩形", bodyRect.x + 14, bodyRect.y + 44, bodyRect.w - 28, 24, false);
+    drawUiText("观察残影、马赛克、丢内容和边界问题", bodyRect.x + 14, bodyRect.y + 76, bodyRect.w - 28, 48, true);
+
+    _display->drawRect(toggleRect.x, toggleRect.y, toggleRect.w, toggleRect.h, TFT_BLACK);
+    snprintf(line, sizeof(line), "切换绘制路径  %s", refreshLabDrawPathLabel(state.refreshLab.drawPath));
+    drawUiText(line, toggleRect.x + 14, toggleRect.y + 8, toggleRect.w - 28, 24, false);
+
+    _display->drawRect(backRect.x, backRect.y, backRect.w, backRect.h, TFT_BLACK);
+    drawUiText("返回设置", backRect.x + 14, backRect.y + 8, backRect.w - 28, 24, false);
+}
+
+void PaperS3EDCRenderer::drawRefreshLabRegionDirect(const AppState& state, const RectBox& rect, bool bodyRegion, uint16_t counter) {
+    char line[96];
+    _display->fillRect(rect.x, rect.y, rect.w, rect.h, TFT_WHITE);
+    _display->drawRect(rect.x, rect.y, rect.w, rect.h, TFT_BLACK);
+    snprintf(line, sizeof(line), "%s #%u", bodyRegion ? "Body Direct" : "Status Direct", counter);
+    drawUiText(line, rect.x + 14, rect.y + 10, rect.w - 28, 24, false);
+    snprintf(line, sizeof(line), "Mode %s", epdModeLabel(state.config.epdRefreshMode));
+    drawUiText(line, rect.x + 14, rect.y + 40, rect.w - 28, 24, false);
+    if (bodyRegion) {
+        drawUiText("这是固定正文矩形区域，用来测试局部提交是否稳定。", rect.x + 14, rect.y + 76, rect.w - 28, rect.h - 92, true);
     }
+}
 
-    const int contentTop = diagTop + 38;
-    const int contentLeft = _layout.padding + 12;
-    const int contentWidth = _width - _layout.padding * 2 - 24;
-    const int sectionGap = 8;
-    const int sectionHeight = std::max(84, (diagHeight - 38 - (int)(previewCount - 1) * sectionGap) / (int)previewCount);
-    for (size_t index = 0; index < previewCount; ++index) {
-        const PaperS3EDCFontManager::PreviewFontSlot& slot = _fonts->previewSlot(index);
-        const int sectionTop = contentTop + (int)index * (sectionHeight + sectionGap);
-        if (index > 0) {
-            _display->drawFastHLine(_layout.padding + 10, sectionTop - 5, _width - _layout.padding * 2 - 20, TFT_BLACK);
-        }
-
-        char labelLine[96];
-        snprintf(labelLine, sizeof(labelLine), "%s  %s", slot.label ? slot.label : "unknown", slot.ready ? "已加载" : "未加载");
-        drawUiText(labelLine, contentLeft, sectionTop, contentWidth, 22, false);
-
-        if (slot.ready) {
-            snprintf(labelLine, sizeof(labelLine), "状态：已加载  %dpx", _fonts->getPreviewFontHeight(index));
-            drawUiText(labelLine, contentLeft, sectionTop + 22, contentWidth, 22, false);
-            snprintf(labelLine, sizeof(labelLine), "%s  %s", slot.loadedStorageName ? slot.loadedStorageName : "None", slot.loadedPath ? slot.loadedPath : "(none)");
-            drawUiText(labelLine, contentLeft, sectionTop + 44, contentWidth, 22, false);
-            const int sampleTop = sectionTop + 68;
-            const int sampleHeight = std::max(16, sectionHeight - 70);
-            _fonts->drawPreviewText(index,
-                                    slot.sample ? slot.sample : "测试",
-                                    contentLeft,
-                                    sampleTop,
-                                    contentWidth,
-                                    sampleHeight,
-                                    false);
+void PaperS3EDCRenderer::drawRefreshLabRegionToCanvas(const AppState& state, M5Canvas& canvas, const RectBox& rect, bool bodyRegion, uint16_t counter) {
+    char line[96];
+    canvas.fillSprite(TFT_WHITE);
+    canvas.drawRect(0, 0, rect.w, rect.h, TFT_BLACK);
+    snprintf(line, sizeof(line), "%s #%u", bodyRegion ? "Body Canvas" : "Status Canvas", counter);
+    if (_fonts && _fonts->isReady()) {
+        _fonts->drawCompactTextToCanvas(canvas, line, 14, 10, rect.w - 28, 24, false);
+    } else {
+        canvas.setTextColor(TFT_BLACK, TFT_WHITE);
+        canvas.setFont(&fonts::Font2);
+        canvas.setCursor(14, 20);
+        canvas.print(line);
+    }
+    snprintf(line, sizeof(line), "Mode %s", epdModeLabel(state.config.epdRefreshMode));
+    if (_fonts && _fonts->isReady()) {
+        _fonts->drawCompactTextToCanvas(canvas, line, 14, 40, rect.w - 28, 24, false);
+    } else {
+        canvas.setCursor(14, 48);
+        canvas.print(line);
+    }
+    if (bodyRegion) {
+        const char* bodyText = "这是固定正文矩形区域，用来测试局部提交是否稳定。";
+        if (_fonts && _fonts->isReady()) {
+            _fonts->drawTextToCanvas(canvas, bodyText, 14, 76, rect.w - 28, rect.h - 92, true);
         } else {
-            drawUiText("状态：未找到或加载失败", contentLeft, sectionTop + 22, contentWidth, 22, false);
-            drawUiText("检查 LittleFS 中的字体文件", contentLeft, sectionTop + 44, contentWidth, 22, false);
+            canvas.setCursor(14, 84);
+            canvas.print("Canvas path partial refresh test.");
         }
     }
+}
+
+void PaperS3EDCRenderer::runRefreshLabStatusTest(const AppState& state) {
+    const RectBox rect = refreshLabStatusRect();
+    if (state.refreshLab.drawPath == RefreshLabDrawPath::Canvas) {
+        M5Canvas canvas(&M5.Display);
+        if (canvas.createSprite(rect.w, rect.h)) {
+            drawRefreshLabRegionToCanvas(state, canvas, rect, false, state.refreshLab.statusCounter);
+            canvas.pushSprite(rect.x, rect.y);
+            canvas.deleteSprite();
+        } else {
+            drawRefreshLabRegionDirect(state, rect, false, state.refreshLab.statusCounter);
+        }
+    } else {
+        drawRefreshLabRegionDirect(state, rect, false, state.refreshLab.statusCounter);
+    }
+    displayRegion(rect, state.config.epdRefreshMode);
+}
+
+void PaperS3EDCRenderer::runRefreshLabBodyTest(const AppState& state) {
+    const RectBox rect = refreshLabBodyRect();
+    if (state.refreshLab.drawPath == RefreshLabDrawPath::Canvas) {
+        M5Canvas canvas(&M5.Display);
+        if (canvas.createSprite(rect.w, rect.h)) {
+            drawRefreshLabRegionToCanvas(state, canvas, rect, true, state.refreshLab.bodyCounter);
+            canvas.pushSprite(rect.x, rect.y);
+            canvas.deleteSprite();
+        } else {
+            drawRefreshLabRegionDirect(state, rect, true, state.refreshLab.bodyCounter);
+        }
+    } else {
+        drawRefreshLabRegionDirect(state, rect, true, state.refreshLab.bodyCounter);
+    }
+    displayRegion(rect, state.config.epdRefreshMode);
 }
 
 void PaperS3EDCRenderer::drawWifiListPage(const AppState& state) {
@@ -866,10 +1200,8 @@ void PaperS3EDCRenderer::drawKeyboardGrid(const AppState& state, int x, int y, i
 
 void PaperS3EDCRenderer::drawFallbackBodyMessage(const char* title, const char* detail) {
     _display->drawRect(_layout.padding, _layout.bodyTop, _width - _layout.padding * 2, 180, TFT_BLACK);
-    _display->setCursor(_layout.padding + 18, _layout.bodyTop + 26);
-    _display->printf("%s", title);
-    _display->setCursor(_layout.padding + 18, _layout.bodyTop + 72);
-    _display->printf("%s", detail);
+    drawUiText(title, _layout.padding + 18, _layout.bodyTop + 18, _width - _layout.padding * 2 - 36, 32, false);
+    drawUiText(detail, _layout.padding + 18, _layout.bodyTop + 64, _width - _layout.padding * 2 - 36, 48, true);
 }
 
 }  // namespace papers3edc
